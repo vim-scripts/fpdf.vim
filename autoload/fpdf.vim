@@ -8,8 +8,6 @@
 " You may use, modify and redistribute this software as you wish.              *
 "******************************************************************************/
 " 2008-03-20: ported to vim by Yukihiro Nakadaira <yukihiri.nakadaira@gmail.com>
-"
-" TODO: embed font and image (use xxd and ASCIIHexDecode?)
 
 function fpdf#import()
   return s:fpdf
@@ -91,8 +89,14 @@ function! s:gzcompress(data)
   throw 'gzcompress: not implemented'
 endfunction
 
-function! s:fread(path)
-  throw 'fread: not impremented'
+function! s:readfilebin(path)
+  if !executable('xxd')
+    throw 'cannot find xxd'
+  elseif !filereadable(a:path)
+    throw a:path . ' is not readable'
+  endif
+  let data = system('xxd -ps -c 1 ' . shellescape(a:path))
+  return split(data)
 endfunction
 
 function! s:get_magic_quotes_runtime()
@@ -298,6 +302,9 @@ function s:fpdf.__construct(...)
   let self.author = ''
   let self.keywords = ''
   let self.creator = ''
+
+  " set default font
+  call self.SetFont('courier')
 endfunction
 
 function s:fpdf.SetMargins(...)
@@ -604,15 +611,18 @@ function s:fpdf.AddFont(...)
   if has_key(self.fonts, fontkey)
     throw 'Font already added: ' . family . ' ' . style
   endif
-  unlet! s:fpdf._font
   call s:include(self._getfontpath() . file)
   " _font should have type, name, desc, up, ut, cw, enc, file, diff
   if !has_key(s:fpdf, '_font')
     throw 'Could not include font definition file'
   endif
+  let font = s:fpdf._font
+  unlet s:fpdf._font
   let i = len(self.fonts) + 1
-  let self.fonts[fontkey] = s:fpdf._font
-  let diff = s:fpdf._font['diff']
+  let font['i'] = i
+  let self.fonts[fontkey] = font
+  let file = font['file']
+  let diff = font['diff']
   if diff != 0
     "Search existing encodings
     let d = 0
@@ -630,8 +640,8 @@ function s:fpdf.AddFont(...)
     let self.fonts[fontkey]['diff'] = d
   endif
   if file != ''
-    if type == 'TrueType'
-      let self.FontFiles[file] = {'length1' : originalsize}
+    if font['type'] == 'TrueType'
+      let self.FontFiles[file] = {'length1' : font['originalsize']}
     else
       let self.FontFiles[file] = {'length1' : size1, 'length2' : size2}
     endif
@@ -1050,55 +1060,59 @@ function s:fpdf.Write(...)
   endif
 endfunction
 
-"function Image($file,$x,$y,$w=0,$h=0,$type='',$link='')
-"{
-"	//Put an image on the page
-"	if(!isset($this->images[$file]))
-"	{
-"		//First use of image, get info
-"		if($type=='')
-"		{
-"			$pos=strrpos($file,'.');
-"			if(!$pos)
-"				$this->Error('Image file has no extension and no type was specified: '.$file);
-"			$type=substr($file,$pos+1);
-"		}
-"		$type=strtolower($type);
-"		$mqr=get_magic_quotes_runtime();
-"		set_magic_quotes_runtime(0);
-"		if($type=='jpg' || $type=='jpeg')
-"			$info=$this->_parsejpg($file);
-"		elseif($type=='png')
-"			$info=$this->_parsepng($file);
-"		else
-"		{
-"			//Allow for additional formats
-"			$mtd='_parse'.$type;
-"			if(!method_exists($this,$mtd))
-"				$this->Error('Unsupported image type: '.$type);
-"			$info=$this->$mtd($file);
-"		}
-"		set_magic_quotes_runtime($mqr);
-"		$info['i']=count($this->images)+1;
-"		$this->images[$file]=$info;
-"	}
-"	else
-"		$info=$this->images[$file];
-"	//Automatic width and height calculation if needed
-"	if($w==0 && $h==0)
-"	{
-"		//Put image at 72 dpi
-"		$w=$info['w']/$this->k;
-"		$h=$info['h']/$this->k;
-"	}
-"	if($w==0)
-"		$w=$h*$info['w']/$info['h'];
-"	if($h==0)
-"		$h=$w*$info['h']/$info['w'];
-"	$this->_out(sprintf('q %.2f 0 0 %.2f %.2f %.2f cm /I%d Do Q',$w*$this->k,$h*$this->k,$x*$this->k,($this->h-($y+$h))*$this->k,$info['i']));
-"	if($link)
-"		$this->Link($x,$y,$w,$h,$link);
-"}
+function s:fpdf.Image(...)
+  let file = get(a:000, 0)
+  let x = s:float.new(get(a:000, 1))
+  let y = s:float.new(get(a:000, 2))
+  let w = s:float.new(get(a:000, 3, 0))
+  let h = s:float.new(get(a:000, 4, 0))
+  let type = get(a:000, 5, '')
+  let link = get(a:000, 6, '')
+
+  "Put an image on the page
+  if !has_key(self.images, file)
+    "First use of image, get info
+    if type == ''
+      if file !~ '\.\w\+$'
+        throw 'Image file has no extension and no type was specified: ' . file
+      endif
+      let type = matchstr(file, '\.\zs\w\+$')
+    endif
+    let type = tolower(type)
+    if type == 'jpg' || type == 'jpeg'
+      let info = self._parsejpg(file)
+    elseif type == 'png'
+      let info = self._parsepng(file)
+    else
+      "Allow for additional formats
+      let mtd = '_parse' . type
+      if !has_key(self, mtd)
+        throw 'Unsupported image type: ' . type
+      endif
+      let info = self[mtd](file)
+    endif
+    let info['i'] = len(self.images) + 1
+    let self.images[file] = info
+  else
+    let info = self.images[file]
+  endif
+  "Automatic width and height calculation if needed
+  if s:float.cmp(w, 0) == 0 && s:float.cmp(h, 0) == 0
+    "Put image at 72 dpi
+    let w = s:float.div(info['w'], self.k)
+    let h = s:float.div(info['h'], self.k)
+  endif
+  if s:float.cmp(w, 0) == 0
+    let w = s:float.div(s:float.mul(h, info['w']), info['h'])
+  endif
+  if s:float.cmp(h, 0) == 0
+    let h = s:float.div(s:float.mul(w, info['h']), info['w'])
+  endif
+  call self._out(s:sprintf('q %.2f 0 0 %.2f %.2f %.2f cm /I%d Do Q', s:float.mul(w, self.k), s:float.mul(h, self.k), s:float.mul(x, self.k), s:float.mul(s:float.sub(self.h, s:float.add(y, h)), self.k), info['i']))
+  if link != ''
+    call self.Link( x, y, w, h, link)
+  endif
+endfunction
 
 function s:fpdf.Ln(...)
   let h = get(a:000, 0, '')
@@ -1251,29 +1265,34 @@ function s:fpdf._putfonts()
     "Font file embedding
     call self._newobj()
     let self.FontFiles[file]['n'] = self.n
-    let font = s:fread(self._getfontpath() . file, 'rb', 1)
+    let fontdata = s:readfilebin(self._getfontpath() . file)
     let compressed = (file =~ '\.z$')
     if !compressed && has_key(info, 'length2')
-      let header = (char2nr(font[0])==128)
+      let header = (str2nr(fontdata[0], 16)==128)
       if header
         "Strip first binary header
-        let font = font[6 : ]
+        "let font = font[6 : ]
+        call remoev(fontdata, 0, 5)
       endif
-      if header && char2nr(font[info['length1']])==128
+      if header && str2nr(fontdata[info['length1']], 16) == 128
         "Strip second binary header
-        let font = font[0 : info['length1']] . font[info['length1'] + 6 : ]
+        "let font = font[0 : info['length1'] - 1] + font[info['length1'] + 6 : ]
+        call remove(fontdata, info['length1'], info['length1'] + 5)
       endif
     endif
-    call self._out('<</Length ' . strlen(font))
+    let hex = join(fontdata, '')
+    call self._out('<</Length ' . strlen(hex))
     if compressed
-      call self._out('/Filter /FlateDecode')
+      call self._out('/Filter [/ASCIIHexDecode /FlateDecode]')
+    else
+      call self._out('/Filter /ASCIIHexDecode')
     endif
     call self._out('/Length1 ' . info['length1'])
     if has_key(info, 'length2')
       call self._out('/Length2 ' . info['length2'] . ' /Length3 0')
     endif
     call self._out('>>')
-    call self._putstream(font)
+    call self._putstream(hex)
     call self._out('endobj')
   endfor
   call s:set_magic_quotes_runtime(mqr)
@@ -1344,7 +1363,7 @@ function s:fpdf._putfonts()
 endfunction
 
 function s:fpdf._putimages()
-  let filter = (self.compress) ? '/Filter /FlateDecode ' : ''
+  let filter = (self.compress) ? '/Filter [/ASCIIHexDecode /FlateDecode] ' : '/Filter /ASCIIHexDecode '
   for [file, info] in items(self.images)
     call self._newobj()
     let self.images[file]['n'] = self.n
@@ -1352,8 +1371,9 @@ function s:fpdf._putimages()
     call self._out('/Subtype /Image')
     call self._out('/Width ' . info['w'])
     call self._out('/Height ' . info['h'])
-    if info['cs']=='Indexed'
-      call self._out('/ColorSpace [/Indexed /DeviceRGB ' . (strlen(info['pal']) / 3 - 1) . ' ' . (self.n + 1) . ' 0 R]')
+    if info['cs'] == 'Indexed'
+      let pallen = strlen(info['pal']) / 2    " count as byte
+      call self._out('/ColorSpace [/Indexed /DeviceRGB ' . (pallen / 3 - 1) . ' ' . (self.n + 1) . ' 0 R]')
     else
       call self._out('/ColorSpace /' . info['cs'])
       if info['cs'] == 'DeviceCMYK'
@@ -1362,7 +1382,9 @@ function s:fpdf._putimages()
     endif
     call self._out('/BitsPerComponent ' . info['bpc'])
     if has_key(info, 'f')
-      call self._out('/Filter /' . info['f'])
+      call self._out('/Filter [/ASCIIHexDecode /' . info['f'] . ']')
+    else
+      call self._out('/Filter /ASCIIHexDecode')
     endif
     if has_key(info, 'parms')
       call self._out(info['parms'])
@@ -1562,118 +1584,178 @@ function s:fpdf._dounderline(x, y, txt)
   return s:sprintf('%.2f %.2f %.2f %.2f re f', s:float.mul(x, self.k), s:float.mul(s:float.sub(self.h, s:float.sub(y, s:float.mul(s:float.div(up, 1000), self.FontSize))), self.k), s:float.mul(w, self.k), s:float.mul(s:float.div(s:float.sub(0, ut), 1000), self.FontSizePt))
 endfunction
 
-"function _parsejpg($file)
-"{
-"	//Extract info from a JPEG file
-"	$a=GetImageSize($file);
-"	if(!$a)
-"		$this->Error('Missing or incorrect image file: '.$file);
-"	if($a[2]!=2)
-"		$this->Error('Not a JPEG file: '.$file);
-"	if(!isset($a['channels']) || $a['channels']==3)
-"		$colspace='DeviceRGB';
-"	elseif($a['channels']==4)
-"		$colspace='DeviceCMYK';
-"	else
-"		$colspace='DeviceGray';
-"	$bpc=isset($a['bits']) ? $a['bits'] : 8;
-"	//Read whole file
-"	$f=fopen($file,'rb');
-"	$data='';
-"	while(!feof($f))
-"		$data.=fread($f,4096);
-"	fclose($f);
-"	return array('w'=>$a[0],'h'=>$a[1],'cs'=>$colspace,'bpc'=>$bpc,'f'=>'DCTDecode','data'=>$data);
-"}
+function s:fpdf._parsejpg(file)
+  let file = a:file
 
-"function _parsepng($file)
-"{
-"	//Extract info from a PNG file
-"	$f=fopen($file,'rb');
-"	if(!$f)
-"		$this->Error('Can\'t open image file: '.$file);
-"	//Check signature
-"	if(fread($f,8)!=chr(137).'PNG'.chr(13).chr(10).chr(26).chr(10))
-"		$this->Error('Not a PNG file: '.$file);
-"	//Read header chunk
-"	fread($f,4);
-"	if(fread($f,4)!='IHDR')
-"		$this->Error('Incorrect PNG file: '.$file);
-"	$w=$this->_freadint($f);
-"	$h=$this->_freadint($f);
-"	$bpc=ord(fread($f,1));
-"	if($bpc>8)
-"		$this->Error('16-bit depth not supported: '.$file);
-"	$ct=ord(fread($f,1));
-"	if($ct==0)
-"		$colspace='DeviceGray';
-"	elseif($ct==2)
-"		$colspace='DeviceRGB';
-"	elseif($ct==3)
-"		$colspace='Indexed';
-"	else
-"		$this->Error('Alpha channel not supported: '.$file);
-"	if(ord(fread($f,1))!=0)
-"		$this->Error('Unknown compression method: '.$file);
-"	if(ord(fread($f,1))!=0)
-"		$this->Error('Unknown filter method: '.$file);
-"	if(ord(fread($f,1))!=0)
-"		$this->Error('Interlacing not supported: '.$file);
-"	fread($f,4);
-"	$parms='/DecodeParms <</Predictor 15 /Colors '.($ct==2 ? 3 : 1).' /BitsPerComponent '.$bpc.' /Columns '.$w.'>>';
-"	//Scan chunks looking for palette, transparency and image data
-"	$pal='';
-"	$trns='';
-"	$data='';
-"	do
-"	{
-"		$n=$this->_freadint($f);
-"		$type=fread($f,4);
-"		if($type=='PLTE')
-"		{
-"			//Read palette
-"			$pal=fread($f,$n);
-"			fread($f,4);
-"		}
-"		elseif($type=='tRNS')
-"		{
-"			//Read transparency info
-"			$t=fread($f,$n);
-"			if($ct==0)
-"				$trns=array(ord(substr($t,1,1)));
-"			elseif($ct==2)
-"				$trns=array(ord(substr($t,1,1)),ord(substr($t,3,1)),ord(substr($t,5,1)));
-"			else
-"			{
-"				$pos=strpos($t,chr(0));
-"				if($pos!==false)
-"					$trns=array($pos);
-"			}
-"			fread($f,4);
-"		}
-"		elseif($type=='IDAT')
-"		{
-"			//Read image data block
-"			$data.=fread($f,$n);
-"			fread($f,4);
-"		}
-"		elseif($type=='IEND')
-"			break;
-"		else
-"			fread($f,$n+4);
-"	}
-"	while($n);
-"	if($colspace=='Indexed' && empty($pal))
-"		$this->Error('Missing palette in '.$file);
-"	fclose($f);
-"	return array('w'=>$w,'h'=>$h,'cs'=>$colspace,'bpc'=>$bpc,'f'=>'FlateDecode','parms'=>$parms,'pal'=>$pal,'trns'=>$trns,'data'=>$data);
-"}
+  "Read whole file
+  let data = s:readfilebin(file)
+  "Extract info from a JPEG file
+  let a = self.GetImageSizeJpeg(data)
+  if a == {}
+    throw 'Missing or incorrect image file: ' . file
+  endif
+  if a[2] != 2
+    throw 'Not a JPEG file: ' . file
+  endif
+  if !has_key(a, 'channels') || a['channels'] == 3
+    let colspace = 'DeviceRGB'
+  elseif a['channels'] == 4
+    let colspace = 'DeviceCMYK'
+  else
+    let colspace = 'DeviceGray'
+  endif
+  let bpc = get(a, 'bits', 8)
+  return {'w' : a[0], 'h' : a[1], 'cs' : colspace, 'bpc' : bpc, 'f' : 'DCTDecode', 'data' : join(data, '')}
+endfunction
+
+function s:fpdf._parsepng(file)
+  let file = a:file
+
+  "Extract info from a PNG file
+  let data = s:readfilebin(file)
+  "Check signature
+  "if(fread($f,8)!=chr(137).'PNG'.chr(13).chr(10).chr(26).chr(10))
+  if join(remove(data, 0, 7), '') != '89504E470D0A1A0A'
+    throw 'Not a PNG file: ' . file
+  endif
+  "Read header chunk
+  call remove(data, 0, 3)
+  if self._freadstr(data, 4) != 'IHDR'
+    throw 'Incorrect PNG file: ' . file
+  endif
+  let w = self._freadint(data)
+  let h = self._freadint(data)
+  let bpc = str2nr(remove(data, 0), 16)
+  if bpc > 8
+    throw '16-bit depth not supported: ' . file
+  endif
+  let ct = str2nr(remove(data, 0), 16)
+  if ct == 0
+    let colspace = 'DeviceGray'
+  elseif ct == 2
+    let colspace = 'DeviceRGB'
+  elseif ct == 3
+    let colspace = 'Indexed'
+  else
+    throw 'Alpha channel not supported: ' . file
+  endif
+  if str2nr(remove(data, 0), 16) != 0
+    throw 'Unknown compression method: ' . file
+  endif
+  if str2nr(remove(data, 0), 16) != 0
+    throw 'Unknown filter method: ' . file
+  endif
+  if str2nr(remove(data, 0), 16) != 0
+    throw 'Interlacing not supported: ' . file
+  endif
+  call remove(data, 0, 3)
+  let parms = '/DecodeParms [null <</Predictor 15 /Colors ' . (ct==2 ? 3 : 1) . ' /BitsPerComponent ' . bpc . ' /Columns ' .  w . '>>]'
+  "Scan chunks looking for palette, transparency and image data
+  let pal = []
+  let trns = ''
+  let idata = []
+  while 1
+    let n = self._freadint(data)
+    let type = self._freadstr(data, 4)
+    if type == 'PLTE'
+      "Read palette
+      let pal = remove(data, 0, n - 1)
+      call remove(data, 0, 3)
+    elseif type == 'tRNS'
+      "Read transparency info
+      let t = remove(data, 0, n - 1)
+      if ct == 0
+        unlet trns
+        let trns = [str2nr(t[1], 16)]
+      elseif ct == 2
+        unlet trns
+        let trns = [str2nr(t[1], 16), str2nr(t[3], 16), str2nr(t[5], 1)]
+      else
+        let pos = index(t, '00')
+        if pos != -1
+          unlet trns
+          let trns = [pos]
+        endif
+      endif
+      call remove(data, 0, 3)
+    elseif type == 'IDAT'
+      "Read image data block
+      call extend(idata, remove(data, 0, n - 1))
+      call remove(data, 0, 3)
+    elseif type == 'IEND'
+      break
+    else
+      call remove(data, 0, n + 4 - 1)
+    endif
+    if n == 0
+      break
+    endif
+  endwhile
+  if colspace == 'Indexed' && empty(pal)
+    throw 'Missing palette in ' . file
+  endif
+  return {'w' : w, 'h' : h, 'cs' : colspace, 'bpc' : bpc, 'f' : 'FlateDecode', 'parms' : parms, 'pal' : join(pal, ''), 'trns' : trns, 'data' : join(idata, '')}
+endfunction
+
+function s:fpdf.GetImageSizeJpeg(data)
+  " XXX: I don't know specification.
+  let data = a:data
+  let code = data[0] . data[1]
+  if code !=? 'FFD8'
+    throw 'GetImageSizeJpeg(): format error'
+  endif
+  let i = 2
+  let code = data[i] . data[i + 1]
+  while code !=? 'FFC0'
+    let i += 2
+    let size = self._freadshort(data[i : i + 1])
+    let i += size
+    let code = data[i] . data[i + 1]
+  endwhile
+  if code !=? 'FFC0'
+    throw 'GetImageSizeJpeg(): cannot get image size'
+  endif
+  let i += 2
+  let data = data[i : i + 7]
+  let lf = self._freadshort(data)
+  let p = self._freadbyte(data)
+  let y = self._freadshort(data)
+  let x = self._freadshort(data)
+  let nif = self._freadbyte(data)
+  let IMAGETYPE_JPEG = 2
+  return {
+        \ 0 : x,
+        \ 1 : y,
+        \ 2 : IMAGETYPE_JPEG,
+        \ 3 : printf('width="%d" height="%d"', x, y),
+        \ 'bits' : p,
+        \ 'channels' : nif,
+        \ 'mime' : 'image/jpeg',
+        \ }
+endfunction
 
 " XXX:
-function s:fpdf._freadint(f)
+function s:fpdf._freadint(data)
   "Read a 4-byte integer from file
-  let a= unpack('Ni', fread(a:f, 4))
-  return a['i']
+  let n = remove(a:data, 0, 3)
+  call map(n, 'str2nr(v:val, 16)')
+  return (n[0] * 0x1000000) + (n[1] * 0x10000) + (n[2] * 0x100) + n[3]
+endfunction
+
+function s:fpdf._freadshort(data)
+  let n = remove(a:data, 0, 1)
+  call map(n, 'str2nr(v:val, 16)')
+  return (n[0] * 0x100) + n[1]
+endfunction
+
+function s:fpdf._freadbyte(data)
+  return str2nr(remove(a:data, 0), 16)
+endfunction
+
+function s:fpdf._freadstr(data, n)
+  let n = remove(a:data, 0, a:n - 1)
+  call map(n, '"\\x" . v:val')
+  return eval('"' . join(n, '') . '"')
 endfunction
 
 function s:fpdf._textstring(s)
@@ -1688,10 +1770,11 @@ endfunction
 
 function s:fpdf._escape(s)
   "Add \ before \, ( and )
-  let s = substitute(a:s, '\\', '\\\\', 'g')
-  let s = substitute(a:s, '(', '\\(', 'g')
-  let s = substitute(a:s, ')', '\\)', 'g')
-  return a:s
+  let s = a:s
+  let s = substitute(s, '\\', '\\\\', 'g')
+  let s = substitute(s, '(', '\\(', 'g')
+  let s = substitute(s, ')', '\\)', 'g')
+  return s
 endfunction
 
 function s:fpdf._bin2hex(s)
@@ -1721,10 +1804,10 @@ endfunction
 
 " Encoding & CMap List (CMap information from Acrobat Reader Resource/CMap folder)
 let s:fpdf.MBCMAP = {
-      \ 'UniCNS' : {'CMap' : 'UniCNS-UTF16-H', 'Ordering' : 'CNS1',   'Supplement' : 0},
-      \ 'UniGB'  : {'CMap' : 'UniGB-UTF16-H',  'Ordering' : 'GB1',    'Supplement' : 2},
-      \ 'UniKS'  : {'CMap' : 'UniKS-UTF16-H',  'Ordering' : 'Korea1', 'Supplement' : 0},
-      \ 'UniJIS' : {'CMap' : 'UniJIS-UTF16-H', 'Ordering' : 'Japan1', 'Supplement' : 5},
+      \ 'UniCNS' : {'Encoding' : 'UniCNS-UTF16-H', 'Ordering' : 'CNS1',   'Supplement' : 0},
+      \ 'UniGB'  : {'Encoding' : 'UniGB-UTF16-H',  'Ordering' : 'GB1',    'Supplement' : 2},
+      \ 'UniKS'  : {'Encoding' : 'UniKS-UTF16-H',  'Ordering' : 'Korea1', 'Supplement' : 0},
+      \ 'UniJIS' : {'Encoding' : 'UniJIS-UTF16-H', 'Ordering' : 'Japan1', 'Supplement' : 5},
       \ }
 
 let s:fpdf.MBTTFDEF_MONO = {
@@ -1769,10 +1852,10 @@ let s:fpdf.MBTTFDEF_PROPORTIONAL = {
       \   },
       \ }
 
-function s:fpdf.AddCIDFont(family, style, name, cw, CMap, registry, ut, up)
+function s:fpdf.AddCIDFont(family, style, name, cw, Encoding, Registry, ut, up)
   let i = len(self.fonts) + 1
   let fontkey = tolower(a:family) . toupper(a:style)
-  let self.fonts[fontkey] = {'i' : i, 'type' : 'Type0', 'name' : a:name, 'up' : a:up, 'ut' : a:ut, 'cw' : a:cw, 'CMap' : a:CMap, 'registry' : a:registry}
+  let self.fonts[fontkey] = {'i' : i, 'type' : 'Type0', 'name' : a:name, 'up' : a:up, 'ut' : a:ut, 'cw' : a:cw, 'Encoding' : a:Encoding, 'Registry' : a:Registry}
 endfunction
 
 function s:fpdf.AddMBFont(...)
@@ -1790,14 +1873,14 @@ function s:fpdf.AddMBFont(...)
   let ut = gt['ut']
   let up = gt['up']
   let cw = gt['cw']
-  let cm = gc['CMap']
+  let ec = gc['Encoding']
   let od = gc['Ordering']
   let sp = gc['Supplement']
-  let registry = {'ordering' : od, 'supplement' : sp}
-  call self.AddCIDFont(family,''  , family                , cw, cm, registry, ut, up)
-  call self.AddCIDFont(family,'B' , family . ",Bold"      , cw, cm, registry, ut, up)
-  call self.AddCIDFont(family,'I' , family . ",Italic"    , cw, cm, registry, ut, up)
-  call self.AddCIDFont(family,'BI', family . ",BoldItalic", cw, cm, registry, ut, up)
+  let Registry = {'Ordering' : od, 'Supplement' : sp}
+  call self.AddCIDFont(family,''  , family                , cw, ec, Registry, ut, up)
+  call self.AddCIDFont(family,'B' , family . ",Bold"      , cw, ec, Registry, ut, up)
+  call self.AddCIDFont(family,'I' , family . ",Italic"    , cw, ec, Registry, ut, up)
+  call self.AddCIDFont(family,'BI', family . ",BoldItalic", cw, ec, Registry, ut, up)
 endfunction
 
 function s:fpdf.nr2utf16hex(char)
@@ -1820,8 +1903,8 @@ function s:fpdf._putType0(font)
   call self._newobj()
   call self._out('<</Type /Font')
   call self._out('/Subtype /Type0')
-  call self._out('/BaseFont /' . font['name'] . '-' . font['CMap'])
-  call self._out('/Encoding /' . font['CMap'])
+  call self._out('/BaseFont /' . font['name'] . '-' . font['Encoding'])
+  call self._out('/Encoding /' . font['Encoding'])
   call self._out('/DescendantFonts [' . (self.n + 1) . ' 0 R]')
   call self._out('>>')
   call self._out('endobj')
@@ -1829,14 +1912,21 @@ function s:fpdf._putType0(font)
   call self._newobj()
   call self._out('<</Type /Font')
   call self._out('/Subtype /CIDFontType0')
-  call self._out('/BaseFont /' . font['name'])
-  call self._out('/CIDSystemInfo <</Registry (Adobe) /Ordering (' . font['registry']['ordering'] . ') /Supplement ' . font['registry']['supplement'] . '>>')
-  call self._out('/FontDescriptor ' . (self.n + 1) . ' 0 R')
+  call self._out('/BaseFont /' . font['name'] . '-' . font['Encoding'])
+  call self._out('/CIDSystemInfo ' . (self.n + 1) . ' 0 R')
+  call self._out('/FontDescriptor ' . (self.n + 2) . ' 0 R')
   call self._out('/W [1 [ ' . join(values(font['cw']), ' ') . ' ]')
-  if font['registry']['ordering'] == 'Japan1'
+  if font['Registry']['Ordering'] == 'Japan1'
     call self._out(' 231 325 500 631 [500] 326 389 500')
   endif
   call self._out(']')
+  call self._out('>>')
+  call self._out('endobj')
+  "CIDSystemInfo
+  call self._newobj()
+  call self._out('<</Registry (Adobe)')
+  call self._out('/Ordering (' . font['Registry']['Ordering'] . ')')
+  call self._out('/Supplement ' . font['Registry']['Supplement'])
   call self._out('>>')
   call self._out('endobj')
   "Font descriptor
@@ -1844,6 +1934,77 @@ function s:fpdf._putType0(font)
   call self._out('<</Type /FontDescriptor')
   call self._out('/FontName /' . font['name'])
   call self._out('/Flags 6')
+  call self._out('/FontBBox [0 0 1000 1000]')
+  call self._out('/ItalicAngle 0')
+  call self._out('/Ascent 1000')
+  call self._out('/Descent 0')
+  call self._out('/CapHeight 1000')
+  call self._out('/StemV 10')
+  call self._out('>>')
+  call self._out('endobj')
+endfunction
+
+function s:fpdf._putType0_test(font)
+  let font = a:font
+
+  "Type0
+  call self._newobj()
+  call self._out('<</Type /Font')
+  call self._out('/Subtype /Type0')
+  call self._out('/BaseFont /' . font['name'])
+  call self._out('/Encoding /Identity-H')
+  call self._out('/DescendantFonts [' . (self.n + 1) . ' 0 R]')
+  call self._out('/ToUnicode ' . (self.n + 2) . ' 0 R')
+  call self._out('>>')
+  call self._out('endobj')
+  "CIDFont
+  call self._newobj()
+  call self._out('<</Type /Font')
+  call self._out('/Subtype /CIDFontType2')
+  call self._out('/BaseFont /' . font['name'])
+  call self._out('/CIDSystemInfo ' . (self.n + 2) . ' 0 R')
+  call self._out('/FontDescriptor ' . (self.n + 3) . ' 0 R')
+  call self._out('/CIDToGIDMap /Identity')
+  call self._out('>>')
+  call self._out('endobj')
+  "ToUnicode
+  call self._newobj()
+  let s = ""
+        \ . "/CIDInit /ProcSet findresource begin \n"
+        \ . "/12 dict begin \n"
+        \ . "/begincmap \n"
+        \ . "/CIDSystemInfoc \n"
+        \ . "<</Registry (Adobe) \n"
+        \ . "/Ordering (UCS) \n"
+        \ . "/Supplement 0 \n"
+        \ . ">> def \n"
+        \ . "/CMapName /Adobe-Identity-UCS def \n"
+        \ . "/CMapType 2 def \n"
+        \ . "1 begincodespacerange \n"
+        \ . "<0000> <FFFF> \n"
+        \ . "endcodespacerange \n"
+        \ . "1 beginbfrange \n"
+        \ . "<0000> <FFFF> <0000> \n"
+        \ . "endbfrange \n"
+        \ . "endcmap \n"
+        \ . "CMapName currentdict /CMap defineresource pop \n"
+        \ . "end \n"
+        \ . "end"
+  call self._out('<</Length ' . strlen(s) . '>>')
+  call self._putstream(s)
+  call self._out('endobj')
+  "CIDSystemInfo
+  call self._newobj()
+  call self._out('<</Registry (Adobe)')
+  call self._out('/Ordering (UCS)')
+  call self._out('/Supplement 0')
+  call self._out('>>')
+  call self._out('endobj')
+  "Font descriptor
+  call self._newobj()
+  call self._out('<</Type /FontDescriptor')
+  call self._out('/FontName /' . font['name'])
+  call self._out('/Flags 96')
   call self._out('/FontBBox [0 0 1000 1000]')
   call self._out('/ItalicAngle 0')
   call self._out('/Ascent 1000')

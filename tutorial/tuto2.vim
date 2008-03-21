@@ -4,10 +4,11 @@ let FPDF = fpdf#import()
 " class PDF extends FPDF
 let PDF = deepcopy(FPDF)
 
+let s:file = expand("<sfile>:p")
+
 function! PDF.Header()
   "Logo
-  "TODO: not implemented
-  "$this->Image('logo_pb.png',10,8,33);
+  call self.Image(fnamemodify(s:file, ':h') . '/logo_pb.png',10,8,33)
   "Arial bold 15
   call self.SetFont('Arial','B',15)
   "Move to the right

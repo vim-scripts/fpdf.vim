@@ -136,8 +136,7 @@ call pdf.SetFont('')
 "Second page
 call pdf.AddPage()
 call pdf.SetLink(link)
-"Image not implemented
-"call pdf.Image('logo.png',10,10,30,0,'','http://www.fpdf.org')
+call pdf.Image(expand('<sfile>:p:h') . '/logo.png',10,10,30,0,'','http://www.fpdf.org')
 call pdf.SetLeftMargin(45)
 call pdf.SetFontSize(14)
 call pdf.WriteHTML(html)

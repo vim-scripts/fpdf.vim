@@ -1,6 +1,5 @@
 
 let FPDF = fpdf#import()
-let s:float = float#import()
 
 "class PDF extends FPDF
 let PDF = deepcopy(FPDF)

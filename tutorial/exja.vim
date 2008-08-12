@@ -7,22 +7,23 @@ let fpdf = fpdf#import()
 
 let pdf = fpdf.new()
 
-" AddMBFont(family, cmap)
-" family: You can use any font name which PDF viewer know.
-" cmap:
-"   UniCNS : Chinese (Simplified)
-"   UniGB  : Chinese (Traditional)
-"   UniKS  : Korean
-"   UniJIS : Japanese
-call pdf.AddMBFont('MS-Gothic', 'UniJIS')
+" see autoload/font/cjk-template.vim
+call pdf.AddFont('MS-Mincho')
+call pdf.AddFont('MS-PMincho')
 
 call pdf.AddPage()
 call pdf.SetFont('Arial','B',16)
 call pdf.SetTextColor(255, 0, 0)
 call pdf.Write(10,"Hello World!\n")
 
-call pdf.SetFont('MS-Gothic')
+call pdf.SetFont('MS-Mincho')
 call pdf.SetTextColor(0, 255, 0)
+call pdf.Write(10,"こんにちは世界\n")
+call pdf.Write(10,"雨ニモマケズ\n")
+call pdf.Write(10,"風ニモマケズ\n")
+
+call pdf.SetFont('MS-PMincho')
+call pdf.SetTextColor(0, 0, 255)
 call pdf.Write(10,"こんにちは世界\n")
 call pdf.Write(10,"雨ニモマケズ\n")
 call pdf.Write(10,"風ニモマケズ\n")

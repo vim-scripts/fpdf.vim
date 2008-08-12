@@ -8,34 +8,26 @@
 " You may use, modify and redistribute this software as you wish.              *
 "******************************************************************************/
 " 2008-03-20: ported to vim by Yukihiro Nakadaira <yukihiri.nakadaira@gmail.com>
+" Last Change: 2008-08-13
 
 function fpdf#import()
   return s:fpdf
 endfunction
 
-let s:float = float#import()
+" temporary variable
+let fpdf#font = {}
 
 let s:__file__ = expand("<sfile>:p")
 
 let s:FPDF_VERSION = '1.53'
-let s:FPDF_VIM_VERSION = '0.1'
+let s:FPDF_VIM_VERSION = '0.3'
 
 let s:false = 0
 let s:true = 1
 
-function! s:sprintf(fmt, ...)
-  let fmt = substitute(a:fmt, '%[^%]\{-}f', '%s', 'g')
-  let args = [fmt]
-  for v in a:000
-    if s:float.is_float(v)
-      " TODO: fmt
-      call add(args, v.tostr())
-    else
-      call add(args, v)
-    endif
-    unlet v
-  endfor
-  return call('printf', args)
+" cast
+function! s:float(f)
+  return a:f * 1.0
 endfunction
 
 function! s:mb_strlen(s)
@@ -85,28 +77,6 @@ function! s:dirname(p)
   return fnamemodify(a:p, ':h')
 endfunction
 
-function! s:gzcompress(data)
-  throw 'gzcompress: not implemented'
-endfunction
-
-function! s:readfilebin(path)
-  if !executable('xxd')
-    throw 'cannot find xxd'
-  elseif !filereadable(a:path)
-    throw a:path . ' is not readable'
-  endif
-  let data = system('xxd -ps -c 1 ' . shellescape(a:path))
-  return split(data)
-endfunction
-
-function! s:get_magic_quotes_runtime()
-  return 0
-endfunction
-
-function! s:set_magic_quotes_runtime(mqr)
-  " void
-endfunction
-
 function! s:equal(a, b)
   return (type(a:a) == type(a:b) && a:a == a:b)
 endfunction
@@ -120,6 +90,169 @@ function! s:substr_count(txt, sub)
   endwhile
   return n
 endfunction
+
+function! s:gzcompress(data)
+  " data is hex dump string
+  if !executable('xxd')
+    throw 'cannot find xxd'
+  elseif !executable('gzip')
+    throw 'cannot find gzip'
+  endif
+  " convert RFC1952 (gzip) to RFC1950 (zlib)
+  " TODO: this is probably wrong...
+  let data = system('xxd -ps -r | gzip -c | xxd -ps -c 1', a:data)
+  let data = s:parse_gzip_file(split(data))
+  return '789c' . data
+endfunction
+
+function! s:parse_gzip_file(data)
+  let data = a:data
+  if s:freadhex(data, 2) !=? '1F8B'
+    throw 'Not a gzip file'
+  endif
+  let cm = s:freadhex(data, 1)
+  if cm !=? '08'
+    throw 'not supported compression method : ' . cm
+  endif
+  let flg = s:freadbyte(data)
+  let mtime = s:freadhex(data, 4)
+  let xfl = s:freadhex(data, 1)
+  let os = s:freadhex(data, 1)
+  if s:getflg(flg, 2)     " FEXTRA
+    let xlen = s:freadshort(data, 0)
+    call s:freadhex(data, xlen)
+  endif
+  if s:getflg(flg, 3)     " FNAME
+    while s:freadhex(data, 1) != '00'
+      " skip to zero-terminator
+    endwhile
+  endif
+  if s:getflg(flg, 4)     " FCOMMENT
+    while s:freadhex(data, 1) != '00'
+      " skip to zero-terminator
+    endwhile
+  endif
+  if s:getflg(flg, 1)     " FHCRC
+    let crc16 = s:freadhex(data, 2)
+  endif
+  let body = s:freadhex(data, len(data) - 8)
+  let crc32 = s:freadhex(data, 4)
+  let isize = s:freadhex(data, 4)
+  return body
+endfunction
+
+function! s:getflg(bits, n)
+  let s = 1
+  for i in range(a:n)
+    let s = s * 2
+  endfor
+  return (a:bits / s) % 1
+endfunction
+
+function! s:readfilebin(path)
+  if !executable('xxd')
+    throw 'cannot find xxd'
+  elseif !filereadable(a:path)
+    throw a:path . ' is not readable'
+  endif
+  let data = system('xxd -ps -c 1 ' . shellescape(a:path))
+  return split(data)
+endfunction
+
+function! s:freadint(data, ...)
+  "Read a 4-byte integer from file
+  let n = get(a:000, 0, 1) ? remove(a:data, 0, 3) : reverse(remove(a:data, 0, 3))
+  if str2nr(n[0], 16) >= 0x80
+    throw 'freadint(): overflow'
+  endif
+  call map(n, 'str2nr(v:val, 16)')
+  return (n[0] * 0x1000000) + (n[1] * 0x10000) + (n[2] * 0x100) + n[3]
+endfunction
+
+function! s:freadshort(data, ...)
+  let n = get(a:000, 0, 1) ? remove(a:data, 0, 1) : reverse(remove(a:data, 0, 1))
+  call map(n, 'str2nr(v:val, 16)')
+  return (n[0] * 0x100) + n[1]
+endfunction
+
+function! s:freadbyte(data)
+  return str2nr(remove(a:data, 0), 16)
+endfunction
+
+function! s:fread(data, n)
+  let n = remove(a:data, 0, a:n - 1)
+  call map(n, '"\\x" . v:val')
+  return eval('"' . join(n, '') . '"')
+endfunction
+
+function! s:freadhex(data, n)
+  return join(remove(a:data, 0, a:n - 1), '')
+endfunction
+
+function! s:bin2hex(s)
+  return join(map(range(len(a:s)), 'printf("%02X", char2nr(a:s[v:val]))'), '')
+endfunction
+
+function! s:bin2hex_utf16(s)
+  return join(map(split(a:s, '\zs'), 's:nr2utf16hex(char2nr(v:val))'), '')
+endfunction
+
+function s:nr2utf16hex(char)
+  if a:char == 0xFFFD
+    return "FFFD" " replacement character
+  elseif a:char < 0x10000
+    return printf("%02X%02X", a:char / 0x100, a:char % 0x100)
+  else
+    let char = a:char - 0x10000
+    let w1 = 0xD800 + (char / 0x400)
+    let w2 = 0xDC00 + (char % 0x400)
+    return printf("%02X%02X%02X%02X", w1 / 0x100, w1 & 0xFF, w2 / 0x100, w2 % 0x100)
+  endif
+endfunction
+
+" TODO:
+function s:bin2hex_winansi(s)
+  let s = (&enc == 'latin1') ? a:s : iconv(a:s, &enc, 'latin1')
+  return s:bin2hex(s)
+endfunction
+
+function s:GetImageSizeJpeg(data)
+  " XXX: I don't know specification.
+  let data = a:data
+  let code = data[0] . data[1]
+  if code !=? 'FFD8'
+    throw 'GetImageSizeJpeg(): format error'
+  endif
+  let i = 2
+  let code = data[i] . data[i + 1]
+  while code !=? 'FFC0'
+    let i += 2
+    let size = s:freadshort(data[i : i + 1])
+    let i += size
+    let code = data[i] . data[i + 1]
+  endwhile
+  if code !=? 'FFC0'
+    throw 'GetImageSizeJpeg(): cannot get image size'
+  endif
+  let i += 2
+  let data = data[i : i + 7]
+  let lf = s:freadshort(data)
+  let p = s:freadbyte(data)
+  let y = s:freadshort(data)
+  let x = s:freadshort(data)
+  let nif = s:freadbyte(data)
+  let IMAGETYPE_JPEG = 2
+  return {
+        \ 0 : x,
+        \ 1 : y,
+        \ 2 : IMAGETYPE_JPEG,
+        \ 3 : printf('width="%d" height="%d"', x, y),
+        \ 'bits' : p,
+        \ 'channels' : nif,
+        \ 'mime' : 'image/jpeg',
+        \ }
+endfunction
+
 
 let s:fpdf = {}
 
@@ -211,7 +344,7 @@ function s:fpdf.__construct(...)
   let self.lasth = 0
   let self.FontFamily = ''
   let self.FontStyle = ''
-  let self.FontSizePt = s:float.new(12)
+  let self.FontSizePt = 12.0
   let self.underline = s:false
   let self.DrawColor = '0 G'
   let self.FillColor = '0 g'
@@ -227,13 +360,13 @@ function s:fpdf.__construct(...)
         \ }
   "Scale factor
   if unit == 'pt'
-    let self.k = s:float.new(1)
+    let self.k = 1.0
   elseif unit == 'mm'
-    let self.k = s:float.div('72', '25.4')
+    let self.k = 72.0 / 25.4
   elseif unit == 'cm'
-    let self.k = s:float.div('72', '2.54')
+    let self.k = 72.0 / 2.54
   elseif unit == 'in'
-    let self.k = s:float.new(72)
+    let self.k = 72.0
   else
     throw 'Incorrect unit: ' . unit
   endif
@@ -241,30 +374,30 @@ function s:fpdf.__construct(...)
   if s:is_string(format)
     if format ==? 'a3'
       unlet format
-      let format = ['841.89','1190.55']
+      let format = [841.89,1190.55]
     elseif format ==? 'a4'
       unlet format
-      let format = ['595.28','841.89']
+      let format = [595.28,841.89]
     elseif format ==? 'a5'
       unlet format
-      let format = ['420.94','595.28']
+      let format = [420.94,595.28]
     elseif format ==? 'letter'
       unlet format
-      let format = ['612','792']
+      let format = [612,792]
     elseif format ==? 'legal'
       unlet format
-      let format = ['612','1008']
+      let format = [612,1008]
     else
       throw 'Unknown page format: ' . format
     endif
     let self.fwPt = format[0]
     let self.fhPt = format[1]
   else
-    let self.fwPt = s:float.mul(format[0], self.k)
-    let self.fhPt = s:float.mul(format[1], self.k)
+    let self.fwPt = format[0] * self.k
+    let self.fhPt = format[1] * self.k
   endif
-  let self.fw = s:float.div(self.fwPt, self.k)
-  let self.fh = s:float.div(self.fwPt, self.k)
+  let self.fw = self.fwPt / self.k
+  let self.fh = self.fhPt / self.k
   "Page orientation
   let orientation = tolower(orientation)
   if orientation == 'p' || orientation == 'portrait'
@@ -279,20 +412,20 @@ function s:fpdf.__construct(...)
     throw 'Incorrect orientation: ' . orientation
   endif
   let self.CurOrientation = self.DefOrientation
-  let self.w = s:float.div(self.wPt, self.k)
-  let self.h = s:float.div(self.hPt, self.k)
+  let self.w = self.wPt / self.k
+  let self.h = self.hPt / self.k
   "Page margins (1 cm)
-  let margin = s:float.div('28.35', self.k)
+  let margin = 28.35 / self.k
   call self.SetMargins(margin, margin)
   "Interior cell margin (1 mm)
-  let self.cMargin = s:float.div(margin, '10')
+  let self.cMargin = margin / 10.0
   "Line width (0.2 mm)
-  let self.LineWidth = s:float.div('.567', self.k)
+  let self.LineWidth = 0.567 / self.k
   "Automatic page break
-  call self.SetAutoPageBreak(s:true, s:float.mul('2', margin))
+  call self.SetAutoPageBreak(s:true, 2.0 * margin)
   "Full width display mode
   call self.SetDisplayMode('fullwidth')
-  "Enable compression
+  "Disable compression
   call self.SetCompression(s:false)
   "Set default PDF version number
   let self.PDFVersion = '1.3'
@@ -302,50 +435,47 @@ function s:fpdf.__construct(...)
   let self.author = ''
   let self.keywords = ''
   let self.creator = ''
-
-  " set default font
-  call self.SetFont('courier')
 endfunction
 
 function s:fpdf.SetMargins(...)
-  let left = s:float.new(get(a:000, 0))
-  let top = s:float.new(get(a:000, 1))
-  let right = s:float.new(get(a:000, 2, -1))
+  let left = s:float(get(a:000, 0))
+  let top = s:float(get(a:000, 1))
+  let right = s:float(get(a:000, 2, -1))
   "Set left, top and right margins
   let self.lMargin = left
   let self.tMargin = top
-  if s:float.cmp(right, -1) == 0
+  if right == -1
     let right = left
   endif
   let self.rMargin = right
 endfunction
 
 function s:fpdf.SetLeftMargin(margin)
-  let margin = s:float.new(a:margin)
+  let margin = s:float(a:margin)
   "Set left margin
   let self.lMargin = margin
-  if self.page > 0 && s:float.cmp(self.x, margin) < 0
+  if self.page > 0 && self.x < margin
     let self.x = margin
   endif
 endfunction
 
 function s:fpdf.SetTopMargin(margin)
   "Set top margin
-  let self.tMargin = s:float.new(a:margin)
+  let self.tMargin = s:float(a:margin)
 endfunction
 
 function s:fpdf.SetRightMargin(margin)
   "Set right margin
-  let self.rMargin = s:float.new(s:margin)
+  let self.rMargin = s:float(s:margin)
 endfunction
 
 function s:fpdf.SetAutoPageBreak(...)
   let auto = get(a:000, 0)
-  let margin = s:float.new(get(a:000, 1, 0))
+  let margin = s:float(get(a:000, 1, 0))
   "Set auto page break mode and triggering margin
   let self.AutoPageBreak = auto
   let self.bMargin = margin
-  let self.PageBreakTrigger = s:float.sub(self.h, margin)
+  let self.PageBreakTrigger = self.h - margin
 endfunction
 
 function s:fpdf.SetDisplayMode(...)
@@ -450,7 +580,7 @@ function s:fpdf.AddPage(...)
   call self._out('2 J')
   "Set line width
   let self.LineWidth = lw
-  call self._out(s:sprintf('%.2f w', s:float.mul(lw, self.k)))
+  call self._out(printf('%.2f w', lw * self.k))
   "Set font
   if family != ''
     call self.SetFont(family, style, size)
@@ -471,7 +601,7 @@ function s:fpdf.AddPage(...)
   "Restore line width
   if self.LineWidth != lw
     let self.LineWidth = lw
-    call self._out(s:sprintf('%.2f w', s:float.mul(lw, self.k)))
+    call self._out(printf('%.2f w', lw * self.k))
   endif
   "Restore font
   if family != ''
@@ -504,14 +634,14 @@ function s:fpdf.PageNo()
 endfunction
 
 function s:fpdf.SetDrawColor(...)
-  let r = s:float.new(get(a:000, 0))
-  let g = s:float.new(get(a:000, 1, -1))
-  let b = s:float.new(get(a:000, 2, -1))
+  let r = s:float(get(a:000, 0))
+  let g = s:float(get(a:000, 1, -1))
+  let b = s:float(get(a:000, 2, -1))
   "Set color for all stroking operations
-  if (s:float.cmp(r, 0) == 0 && s:float.cmp(g, 0) == 0 && s:float.cmp(b, 0) == 0) || s:float.cmp(g, -1) == 0
-    let self.DrawColor = s:sprintf('%.3f G', s:float.div(r, 255))
+  if (r == 0 && g == 0 && b == 0) || g == -1
+    let self.DrawColor = printf('%.3f G', r / 255.0)
   else
-    let self.DrawColor = s:sprintf('%.3f %.3f %.3f RG', s:float.div(r, 255), s:float.div(g, 255), s:float.div(b, 255))
+    let self.DrawColor = printf('%.3f %.3f %.3f RG', r / 255.0, g / 255.0, b / 255.0)
   endif
   if self.page > 0
     call self._out(self.DrawColor)
@@ -519,14 +649,14 @@ function s:fpdf.SetDrawColor(...)
 endfunction
 
 function s:fpdf.SetFillColor(...)
-  let r = s:float.new(get(a:000, 0))
-  let g = s:float.new(get(a:000, 1, -1))
-  let b = s:float.new(get(a:000, 2, -1))
+  let r = s:float(get(a:000, 0))
+  let g = s:float(get(a:000, 1, -1))
+  let b = s:float(get(a:000, 2, -1))
   "Set color for all filling operations
-  if (s:float.cmp(r, 0) == 0 && s:float.cmp(g, 0) == 0 && s:float.cmp(b, 0) == 0) || s:float.cmp(g, -1) == 0
-    let self.FillColor = s:sprintf('%.3f g', s:float.div(r, 255))
+  if (r == 0 && g == 0 && b == 0) || g == -1
+    let self.FillColor = printf('%.3f g', r / 255.0)
   else
-    let self.FillColor = s:sprintf('%.3f %.3f %.3f rg', s:float.div(r, 255), s:float.div(g, 255), s:float.div(b, 255))
+    let self.FillColor = printf('%.3f %.3f %.3f rg', r / 255.0, g / 255.0, b / 255.0)
   endif
   let self.ColorFlag = (self.FillColor != self.TextColor)
   if self.page > 0
@@ -535,14 +665,14 @@ function s:fpdf.SetFillColor(...)
 endfunction
 
 function s:fpdf.SetTextColor(...)
-  let r = s:float.new(get(a:000, 0))
-  let g = s:float.new(get(a:000, 1, -1))
-  let b = s:float.new(get(a:000, 2, -1))
+  let r = s:float(get(a:000, 0))
+  let g = s:float(get(a:000, 1, -1))
+  let b = s:float(get(a:000, 2, -1))
   "Set color for text
-  if (s:float.cmp(r, 0) == 0 && s:float.cmp(g, 0) == 0 && s:float.cmp(b, 0) == 0) || s:float.cmp(g, -1) == 0
-    let self.TextColor = s:sprintf('%.3f g', s:float.div(r, 255))
+  if (r == 0 && g == 0 && b == 0) || g == -1
+    let self.TextColor = printf('%.3f g', r / 255.0)
   else
-    let self.TextColor = s:sprintf('%.3f %.3f %.3f rg', s:float.div(r, 255), s:float.div(g, 255), s:float.div(b, 255))
+    let self.TextColor = printf('%.3f %.3f %.3f rg', r / 255.0, g / 255.0, b / 255.0)
   endif
   let self.ColorFlag = (self.FillColor != self.TextColor)
 endfunction
@@ -558,20 +688,20 @@ function s:fpdf.GetStringWidthPoint(s)
 endfunction
 
 function s:fpdf.GetStringWidth(s)
-  return s:float.div(s:float.mul(self.GetStringWidthPoint(a:s), self.FontSize), 1000)
+  return self.GetStringWidthPoint(a:s) * self.FontSize / 1000.0
 endfunction
 
 function s:fpdf.SetLineWidth(width)
   "Set line width
-  let self.LineWidth = s:float.new(a:width)
+  let self.LineWidth = s:float(a:width)
   if self.page > 0
-    call self._out(s:sprintf('%.2f w', s:float.mul(a:width, self.k)))
+    call self._out(printf('%.2f w', a:width * self.k))
   endif
 endfunction
 
 function s:fpdf.Line(x1, y1, x2, y2)
   "Draw a line
-  call self._out(s:sprintf('%.2f %.2f m %.2f %.2f l S', s:float.mul(a:x1, self.k), s:float.mul(s:float.sub(self.h, a:y1), self.k), s:float.mul(a:x2, self.k), s:float.mul(s:float.sub(self.h, a:y2), self.k)))
+  call self._out(printf('%.2f %.2f m %.2f %.2f l S', a:x1 * self.k, (self.h - a:y1) * self.k, a:x2 * self.k, (self.h - a:y2) * self.k))
 endfunction
 
 function s:fpdf.Rect(...)
@@ -588,7 +718,7 @@ function s:fpdf.Rect(...)
   else
     let op = 'S'
   endif
-  call self._out(s:sprintf('%.2f %.2f %.2f %.2f re %s', s:float.mul(x, self.k), s:float.mul(s:float.sub(self.h, y), self.k), s:float.mul(w, self.k), s:float.mul(s:float.sub(0, h), self.k), op))
+  call self._out(printf('%.2f %.2f %.2f %.2f re %s', x * self.k, (self.h - y) * self.k, w * self.k, -h * self.k, op))
 endfunction
 
 function s:fpdf.AddFont(...)
@@ -611,16 +741,23 @@ function s:fpdf.AddFont(...)
   if has_key(self.fonts, fontkey)
     throw 'Font already added: ' . family . ' ' . style
   endif
+  let g:fpdf#font = {}
   call s:include(self._getfontpath() . file)
-  " _font should have type, name, desc, up, ut, cw, enc, file, diff
-  if !has_key(s:fpdf, '_font')
+  " fpdf#font should have type, name, desc, up, ut, cw, enc, file, diff
+  if empty(g:fpdf#font)
     throw 'Could not include font definition file'
   endif
-  let font = s:fpdf._font
-  unlet s:fpdf._font
+  let font = g:fpdf#font
   let i = len(self.fonts) + 1
   let font['i'] = i
-  let self.fonts[fontkey] = font
+  if font['type'] == 'cidfont0'
+    let self.fonts[family] = font
+    let self.fonts[family.'B'] = extend({'name':font['name'].',Bold'}, font, 'keep')
+    let self.fonts[family.'I'] = extend({'name':font['name'].',Italic'}, font, 'keep')
+    let self.fonts[family.'BI'] = extend({'name':font['name'].',BoldItalic'}, font, 'keep')
+  else
+    let self.fonts[fontkey] = font
+  endif
   let file = font['file']
   let diff = font['diff']
   if diff != 0
@@ -653,7 +790,7 @@ let g:fpdf_charwidths = {}
 function s:fpdf.SetFont(...)
   let family = get(a:000, 0)
   let style = get(a:000, 1, '')
-  let size = s:float.new(get(a:000, 2, 0))
+  let size = s:float(get(a:000, 2, 0))
 
   "Select a font; size given in points
 
@@ -667,20 +804,20 @@ function s:fpdf.SetFont(...)
     let style = ''
   endif
   let style = toupper(style)
-  if style =~# 'U'
+  if style =~ 'U'
     let self.underline = s:true
-    let style = substitute(style, 'U', '', 'G')
+    let style = substitute(style, 'U', '', 'g')
   else
     let self.underline = s:false
   endif
   if style == 'IB'
     let style = 'BI'
   endif
-  if s:float.cmp(size, 0) == 0
+  if size == 0
     let size = self.FontSizePt
   endif
   "Test if font is already selected
-  if self.FontFamily == family && self.FontStyle == style && s:float.cmp(self.FontSizePt, size) == 0
+  if self.FontFamily == family && self.FontStyle == style && self.FontSizePt == size
     return
   endif
   "Test if used for the first time
@@ -702,29 +839,33 @@ function s:fpdf.SetFont(...)
       let i = len(self.fonts) + 1
       let self.fonts[fontkey] = {'i' : i, 'type' : 'core', 'name' : self.CoreFonts[fontkey], 'up' : -100, 'ut' : 50, 'cw' : g:fpdf_charwidths[fontkey]}
     else
-      throw 'Undefined font: ' . family . ' ' . style
+      try
+        call self.AddFont(family, style)
+      catch
+        call self.AddFont(family, '')
+      endtry
     endif
   endif
   "Select it
   let self.FontFamily = family
   let self.FontStyle = style
   let self.FontSizePt = size
-  let self.FontSize = s:float.div(size, self.k)
+  let self.FontSize = size / self.k
   let self.CurrentFont = self.fonts[fontkey]
   if self.page > 0
-    call self._out(s:sprintf('BT /F%d %.2f Tf ET', self.CurrentFont['i'], self.FontSizePt))
+    call self._out(printf('BT /F%d %.2f Tf ET', self.CurrentFont['i'], self.FontSizePt))
   endif
 endfunction
 
 function s:fpdf.SetFontSize(size)
   "Set font size in points
-  if s:float.cmp(self.FontSizePt, a:size) == 0
+  if self.FontSizePt == a:size
     return
   endif
-  let self.FontSizePt = s:float.new(a:size)
-  let self.FontSize = s:float.div(a:size, self.k)
+  let self.FontSizePt = s:float(a:size)
+  let self.FontSize = a:size / self.k
   if self.page > 0
-    call self._out(s:sprintf('BT /F%d %.2f Tf ET', self.CurrentFont['i'], self.FontSizePt))
+    call self._out(printf('BT /F%d %.2f Tf ET', self.CurrentFont['i'], self.FontSizePt))
   endif
 endfunction
 
@@ -737,10 +878,10 @@ endfunction
 
 function s:fpdf.SetLink(...)
   let link = get(a:000, 0)
-  let y = s:float.new(get(a:000, 1, 0))
+  let y = s:float(get(a:000, 1, 0))
   let page = get(a:000, 2, -1)
   "Set destination of internal link
-  if s:float.cmp(y, -1) == 0
+  if y == -1
     let y = self.y
   endif
   if page == -1
@@ -754,16 +895,16 @@ function s:fpdf.Link(x, y, w, h, link)
   if !has_key(self.PageLinks, self.page)
     let self.PageLinks[self.page] = []
   endif
-  call add(self.PageLinks[self.page], [s:float.mul(a:x, self.k), s:float.sub(self.hPt, s:float.mul(a:y, self.k)), s:float.mul(a:w, self.k), s:float.mul(a:h, self.k), a:link])
+  call add(self.PageLinks[self.page], [a:x * self.k, self.hPt - a:y * self.k, a:w * self.k, a:h * self.k, a:link])
 endfunction
 
 function s:fpdf.Text(x, y, txt)
   "Output a string
-  let s = s:sprintf('BT %.2f %.2f Td %s Tj ET', s:float.mul(a:x, self.k), s:float.mul(s:float.sub(self.h, a:y), self.k) self._textstring(a:txt))
+  let s = printf('BT %.2f %.2f Td %s Tj ET', a:x * self.k, (self.h - a:y) * self.k self._textstring(a:txt))
   if self.underline && a:txt != ''
     let s .= ' ' . self._dounderline(a:x, a:y, a:txt)
   endif
-  if(self.ColorFlag)
+  if self.ColorFlag
     let s = 'q ' . self.TextColor . ' ' . s . ' Q'
   endif
   call self._out(s)
@@ -775,8 +916,8 @@ function s:fpdf.AcceptPageBreak()
 endfunction
 
 function s:fpdf.Cell(...)
-  let w = s:float.new(get(a:000, 0))
-  let h = s:float.new(get(a:000, 1))
+  let w = s:float(get(a:000, 0))
+  let h = s:float(get(a:000, 1, 0))
   let txt = get(a:000, 2, '')
   let border = get(a:000, 3, 0)
   let ln = get(a:000, 4, 0)
@@ -786,23 +927,23 @@ function s:fpdf.Cell(...)
 
   "Output a cell
   let k = self.k
-  if s:float.cmp(s:float.add(self.y, h), self.PageBreakTrigger) > 0 && !self.InFooter && self.AcceptPageBreak()
+  if self.y + h > self.PageBreakTrigger && !self.InFooter && self.AcceptPageBreak()
     "Automatic page break
     let x = self.x
     let ws = self.ws
-    if s:float.cmp(ws, 0) > 0
-      let self.ws = s:float.new(0)
+    if ws > 0
+      let self.ws = s:float(0)
       call self._out('0 Tw')
     endif
     call self.AddPage(self.CurOrientation)
     let self.x = x
-    if s:float.cmp(ws, 0) > 0
+    if ws > 0
       let self.ws = ws
-      call self._out(s:sprintf('%.3f Tw', s:float.mul(ws, k)))
+      call self._out(printf('%.3f Tw', ws * k))
     endif
   endif
-  if s:float.cmp(w, 0) == 0
-    let w = s:float.sub(s:float.sub(self.w, self.rMargin), self.x)
+  if w == 0
+    let w = self.w - self.rMargin - self.x
   endif
   let s = ''
   if fill == 1 || border == 1
@@ -811,44 +952,44 @@ function s:fpdf.Cell(...)
     else
       let op = 'S'
     endif
-    let s = s:sprintf('%.2f %.2f %.2f %.2f re %s ', s:float.mul(self.x, k), s:float.mul(s:float.sub(self.h, self.y), k), s:float.mul(w, k), s:float.mul(s:float.sub(0, h), k), op)
+    let s = printf('%.2f %.2f %.2f %.2f re %s ', self.x * k, (self.h - self.y) * k, w * k, -h * k, op)
   endif
   if s:is_string(border)
     let x = self.x
     let y = self.y
     if border =~? 'L'
-      let s .= s:sprintf('%.2f %.2f m %.2f %.2f l S ', s:float.mul(x, k), s:float.mul(s:float.sub(self.h, y), k), s:float.mul(x, k), s:float.mul(s:float.sub(self.h, s:float.add(y, h)), k))
+      let s .= printf('%.2f %.2f m %.2f %.2f l S ', x * k, (self.h - y) * k, x * k, (self.h - (y + h)) * k)
     endif
     if border =~? 'T'
-      let s .= s:sprintf('%.2f %.2f m %.2f %.2f l S ', s:float.mul(x, k), s:float.mul(s:float.sub(self.h, y), k), s:float.mul(s:float.add(x, w), k), s:float.mul(s:float.sub(self.h, y), k))
+      let s .= printf('%.2f %.2f m %.2f %.2f l S ', x * k, (self.h - y) * k, (x + w) * k, (self.h - y) * k)
     endif
     if border =~? 'R'
-      let s .= s:sprintf('%.2f %.2f m %.2f %.2f l S ', s:float.mul(s:float.add(x, w), k), s:float.mul(s:float.sub(self.h, y), k), s:float.mul(s:float.add(x, w), k), s:float.mul(s:float.sub(self.h, s:float.add(y, h)), k))
+      let s .= printf('%.2f %.2f m %.2f %.2f l S ', (x + w) * k, (self.h - y) * k, (x + w) * k, (self.h - (y + h)) * k)
     endif
     if border =~? 'B'
-      let s .= s:sprintf('%.2f %.2f m %.2f %.2f l S ', s:float.mul(x, k), s:float.mul(s:float.sub(self.h, s:float.add(y, h)), k), s:float.mul(s:float.add(x, w), k), s:float.mul(s:float.sub(self.h, s:float.add(y, h)), k))
+      let s .= printf('%.2f %.2f m %.2f %.2f l S ', x * k, (self.h - (y + h)) * k, (x + w) * k, (self.h - (y + h)) * k)
     endif
   endif
   if txt != ''
     if align ==? 'R'
-      let dx = s:float.sub(s:float.sub(w, self.cMargin), self.GetStringWidth(txt))
+      let dx = w - self.cMargin - self.GetStringWidth(txt)
     elseif align ==? 'C'
-      let dx = s:float.div(s:float.sub(w, self.GetStringWidth(txt)), 2)
+      let dx = (w - self.GetStringWidth(txt)) / 2.0
     else
       let dx = self.cMargin
     endif
     if self.ColorFlag
       let s .= 'q ' . self.TextColor . ' '
     endif
-    let s .= s:sprintf('BT %.2f %.2f Td %s Tj ET', s:float.mul(s:float.add(self.x, dx), k), s:float.mul(s:float.sub(self.h, s:float.add(s:float.add(self.y, s:float.mul('.5', h)), s:float.mul('.3', self.FontSize))), k), self._textstring(txt))
+    let s .= printf('BT %.2f %.2f Td %s Tj ET', (self.x + dx) * k, (self.h - (self.y + 0.5 * h + 0.3 * self.FontSize)) * k, self._textstring(txt))
     if self.underline
-      let s .= ' ' . self._dounderline(s:float.add(self.x, dx), s:float.add(s:float.add(self.y, s:float.mul('.5', h)), s:float.mul('.3', self.FontSize)), txt)
+      let s .= ' ' . self._dounderline(self.x + dx, self.y + 0.5 * h + 0.3 * self.FontSize, txt)
     endif
     if self.ColorFlag
       let s .= ' Q'
     endif
     if link != ''
-      call self.Link(s:float.add(self.x, dx), s:float.sub(s:float.add(self.y, s:float.mul('.5', h)), s:float.mul('.5', self.FontSize)), self.GetStringWidth(txt), self.FontSize, link)
+      call self.Link(self.x + dx, self.y + 0.5 * h - 0.5 * self.FontSize, self.GetStringWidth(txt), self.FontSize, link)
     endif
   endif
   if s != ''
@@ -857,18 +998,18 @@ function s:fpdf.Cell(...)
   let self.lasth = h
   if ln > 0
     "Go to next line
-    let self.y = s:float.add(self.y, h)
+    let self.y = self.y + h
     if ln == 1
       let self.x = self.lMargin
     endif
   else
-    let self.x = s:float.add(self.x, w)
+    let self.x = self.x + w
   endif
 endfunction
 
 function s:fpdf.MultiCell(...)
-  let w = s:float.cast(get(a:000, 0))
-  let h = s:float.cast(get(a:000, 1))
+  let w = s:float(get(a:000, 0))
+  let h = s:float(get(a:000, 1))
   let txt = get(a:000, 2)
   let border = get(a:000, 3, 0)
   let align = get(a:000, 4, 'J')
@@ -876,10 +1017,10 @@ function s:fpdf.MultiCell(...)
 
   "Output text with automatic or explicit line breaks
   let cw = self.CurrentFont['cw']
-  if s:float.cmp(w, 0) == 0
-    let w = s:float.sub(s:float.sub(self.w, self.rMargin), self.x)
+  if w == 0
+    let w = self.w - self.rMargin - self.x
   endif
-  let wmax = s:float.div(s:float.mul(s:float.sub(w, s:float.mul(2, self.cMargin)), 1000), self.FontSize)
+  let wmax = (w - 2 * self.cMargin) * 1000.0 / self.FontSize
   let s = substitute(txt, "\r", '', 'g')
   let nb = s:mb_strlen(s)
   if nb > 0 && s:mb_substr(s, nb - 1, 1) == "\n"
@@ -914,8 +1055,8 @@ function s:fpdf.MultiCell(...)
     let c = s:mb_substr(s, i, 1)
     if c == "\n"
       "Explicit line break
-      if s:float.cmp(ws, 0) > 0
-        let self.ws = s:float.new(0)
+      if ws > 0
+        let self.ws = 0.0
         call self._out('0 Tw')
       endif
       call self.Cell(w,h,s:mb_substr(s,j,i-j),b,2,align,fill)
@@ -936,25 +1077,25 @@ function s:fpdf.MultiCell(...)
       let ns += 1
     endif
     let l += self.GetStringWidthPoint(c)
-    if s:float.cmp(l, wmax) > 0
+    if l > wmax
       "Automatic line break
       if sep == -1
         if i == j
           let i += 1
         endif
-        if s:float.cmp(self.ws, 0) > 0
-          let self.ws = s:float.new(0)
+        if self.ws > 0
+          let self.ws = 0.0
           call self._out('0 Tw')
         endif
         call self.Cell(w,h,s:mb_substr(s,j,i-j),b,2,align,fill)
       else
         if align ==? 'J'
           if ns > 1
-            let self.ws = s:float.div(s:float.mul(s:float.div(s:float.sub(wmax, ls), 1000), self.FontSize), ns - 1)
+            let self.ws = (wmax - ls) / 1000.0 * self.FontSize / (ns - 1)
           else
-            let self.ws = s:float.new(0)
+            let self.ws = 0.0
           endif
-          call self._out(s:sprintf('%.3f Tw',s:float.mul(self.ws, self.k)))
+          call self._out(printf('%.3f Tw', self.ws * self.k))
         endif
         call self.Cell(w,h,s:mb_substr(s,j,sep-j),b,2,align,fill)
         let i = sep + 1
@@ -972,8 +1113,8 @@ function s:fpdf.MultiCell(...)
     endif
   endwhile
   "Last chunk
-  if s:float.cmp(self.ws, 0) > 0
-    let self.ws = s:float.new(0)
+  if self.ws > 0
+    let self.ws = 0.0
     call self._out('0 Tw')
   endif
   if border =~? 'B'
@@ -984,13 +1125,14 @@ function s:fpdf.MultiCell(...)
 endfunction
 
 function s:fpdf.Write(...)
-  let h = s:float.new(get(a:000, 0))
+  let h = s:float(get(a:000, 0))
   let txt = get(a:000, 1)
   let link = get(a:000, 2, '')
+  let fill = get(a:000, 3, 0)   " XXX: added
 
   "Output text in flowing mode
-  let w = s:float.sub(s:float.sub(self.w, self.rMargin), self.x)
-  let wmax = s:float.div(s:float.mul(s:float.sub(w, s:float.mul(2, self.cMargin)), 1000), self.FontSize)
+  let w = self.w - self.rMargin - self.x
+  let wmax = (w - 2.0 * self.cMargin) * 1000.0 / self.FontSize
   let s = substitute(txt, "\r", '', 'g')
   let nb = s:mb_strlen(s)
   let sep = -1
@@ -1003,15 +1145,15 @@ function s:fpdf.Write(...)
     let c = s:mb_substr(s, i, 1)
     if c == "\n"
       "Explicit line break
-      call self.Cell(w, h, s:mb_substr(s, j, i-j), 0, 2, '', 0, link)
+      call self.Cell(w, h, s:mb_substr(s, j, i-j), 0, 2, '', fill, link)
       let i += 1
       let sep = -1
       let j = i
       let l = 0
       if nl == 1
         let self.x = self.lMargin
-        let w = s:float.sub(s:float.sub(self.w, self.rMargin), s:float.sub(0, self.x))
-        let wmax = s:float.div(s:float.mul(s:float.sub(w, s:float.mul(2, self.cMargin)), 1000), self.FontSize)
+        let w = self.w - self.rMargin - self.x
+        let wmax = (w - 2.0 * self.cMargin) * 1000.0 / self.FontSize
       endif
       let nl += 1
       continue
@@ -1020,15 +1162,15 @@ function s:fpdf.Write(...)
       let sep = i
     endif
     let l += self.GetStringWidthPoint(c)
-    if s:float.cmp(l, wmax) > 0
+    if l > wmax
       "Automatic line break
       if sep == -1
-        if s:float.cmp(self.x, self.lMargin) > 0
+        if self.x > self.lMargin
           "Move to next line
           let self.x = self.lMargin
-          let self.y = s:float.add(self.y, h)
-          let w = s:float.sub(s:float.sub(self.w, self.rMargin), self.x)
-          let wmax = s:float.div(s:float.mul(s:float.sub(w, s:float.mul(2, self.cMargin)), 1000), self.FontSize)
+          let self.y = self.y + h
+          let w = self.w - self.rMargin - self.x
+          let wmax = (w - 2.0 * self.cMargin) * 1000.0 / self.FontSize
           let i += 1
           let nl += 1
           continue
@@ -1036,9 +1178,9 @@ function s:fpdf.Write(...)
         if i == j
           let i += 1
         endif
-        call self.Cell(w, h, s:mb_substr(s, j, i - j), 0, 2, '', 0, link)
+        call self.Cell(w, h, s:mb_substr(s, j, i - j), 0, 2, '', fill, link)
       else
-        call self.Cell(w, h, s:mb_substr(s, j, sep - j), 0, 2, '', 0, link)
+        call self.Cell(w, h, s:mb_substr(s, j, sep - j), 0, 2, '', fill, link)
         let i = sep + 1
       endif
       let sep = -1
@@ -1046,8 +1188,8 @@ function s:fpdf.Write(...)
       let l = 0
       if nl == 1
         let self.x = self.lMargin
-        let w = s:float.sub(s:float.sub(self.w, self.rMargin), self.x)
-        let wmax = s:float.div(s:float.mul(s:float.sub(w, s:float.mul(2, self.cMargin)), 1000), self.FontSize)
+        let w = self.w - self.rMargin - self.x
+        let wmax = (w - 2.0 * self.cMargin) * 1000.0 / self.FontSize
       endif
       let nl += 1
     else
@@ -1056,16 +1198,16 @@ function s:fpdf.Write(...)
   endwhile
   "Last chunk
   if i != j
-    call self.Cell(s:float.mul(s:float.div(l, 1000), self.FontSize), h, s:mb_substr(s, j), 0, 0, '', 0, link)
+    call self.Cell(l / 1000.0 * self.FontSize, h, s:mb_substr(s, j), 0, 0, '', fill, link)
   endif
 endfunction
 
 function s:fpdf.Image(...)
   let file = get(a:000, 0)
-  let x = s:float.new(get(a:000, 1))
-  let y = s:float.new(get(a:000, 2))
-  let w = s:float.new(get(a:000, 3, 0))
-  let h = s:float.new(get(a:000, 4, 0))
+  let x = s:float(get(a:000, 1))
+  let y = s:float(get(a:000, 2))
+  let w = s:float(get(a:000, 3, 0))
+  let h = s:float(get(a:000, 4, 0))
   let type = get(a:000, 5, '')
   let link = get(a:000, 6, '')
 
@@ -1097,18 +1239,18 @@ function s:fpdf.Image(...)
     let info = self.images[file]
   endif
   "Automatic width and height calculation if needed
-  if s:float.cmp(w, 0) == 0 && s:float.cmp(h, 0) == 0
+  if w == 0 && h == 0
     "Put image at 72 dpi
-    let w = s:float.div(info['w'], self.k)
-    let h = s:float.div(info['h'], self.k)
+    let w = info['w'] / self.k
+    let h = info['h'] / self.k
   endif
-  if s:float.cmp(w, 0) == 0
-    let w = s:float.div(s:float.mul(h, info['w']), info['h'])
+  if w == 0
+    let w = h * info['w'] / info['h']
   endif
-  if s:float.cmp(h, 0) == 0
-    let h = s:float.div(s:float.mul(w, info['h']), info['w'])
+  if h == 0
+    let h = w * info['h'] / info['w']
   endif
-  call self._out(s:sprintf('q %.2f 0 0 %.2f %.2f %.2f cm /I%d Do Q', s:float.mul(w, self.k), s:float.mul(h, self.k), s:float.mul(x, self.k), s:float.mul(s:float.sub(self.h, s:float.add(y, h)), self.k), info['i']))
+  call self._out(printf('q %.2f 0 0 %.2f %.2f %.2f cm /I%d Do Q', w * self.k, h * self.k, x * self.k, (self.h - (y + h)) * self.k, info['i']))
   if link != ''
     call self.Link( x, y, w, h, link)
   endif
@@ -1119,9 +1261,9 @@ function s:fpdf.Ln(...)
   "Line feed; default value is last cell height
   let self.x = self.lMargin
   if s:is_string(h)
-    let self.y = s:float.add(self.y, self.lasth)
+    let self.y = self.y + self.lasth
   else
-    let self.y = s:float.add(self.y, h)
+    let self.y = self.y + h
   endif
 endfunction
 
@@ -1131,12 +1273,12 @@ function s:fpdf.GetX()
 endfunction
 
 function s:fpdf.SetX(x)
-  let x = s:float.new(a:x)
+  let x = s:float(a:x)
   "Set x position
-  if s:float.cmp(x, 0) >= 0
+  if x >= 0
     let self.x = x
   else
-    let self.x = s:float.add(self.w, x)
+    let self.x = self.w + x
   endif
 endfunction
 
@@ -1146,13 +1288,13 @@ function s:fpdf.GetY()
 endfunction
 
 function s:fpdf.SetY(y)
-  let y = s:float.new(a:y)
+  let y = s:float(a:y)
   "Set y position and reset x
   let self.x = self.lMargin
-  if s:float.cmp(y, 0) >= 0
+  if y >= 0
     let self.y = y
   else
-    let self.y = s:float.add(self.h, a:y)
+    let self.y = self.h + a:y
   endif
 endfunction
 
@@ -1201,28 +1343,27 @@ function s:fpdf._putpages()
     let wPt = self.fhPt
     let hPt = self.fwPt
   endif
-  let filter = self.compress ? '/Filter /FlateDecode ' : ''
   for n in range(1, nb)
     "Page
     call self._newobj()
     call self._out('<</Type /Page')
     call self._out('/Parent 1 0 R')
     if has_key(self.OrientationChanges, n)
-      call self._out(s:sprintf('/MediaBox [0 0 %.2f %.2f]', hPt, wPt))
+      call self._out(printf('/MediaBox [0 0 %.2f %.2f]', hPt, wPt))
     endif
     call self._out('/Resources 2 0 R')
     if has_key(self.PageLinks, n)
       "Links
       let annots = '/Annots ['
       for pl in self.PageLinks[n]
-        let rect = s:sprintf('%.2f %.2f %.2f %.2f', pl[0], pl[1], s:float.add(pl[0], pl[2]), s:float.sub(pl[1], pl[3]))
+        let rect = printf('%.2f %.2f %.2f %.2f', pl[0], pl[1], pl[0] + pl[2], pl[1] - pl[3])
         let annots .= '<</Type /Annot /Subtype /Link /Rect [' . rect . '] /Border [0 0 0] '
         if s:is_string(pl[4])
           let annots .= '/A <</S /URI /URI ' . self._textstring(pl[4]) . '>>>>'
         else
           let l = self.links[pl[4]]
           let h = has_key(self.OrientationChanges, l[0]) ? wPt : hPt
-          let annots .= s:sprintf('/Dest [%d 0 R /XYZ 0 %.2f null]>>', 1 + 2 * l[0], s:float.sub(h, s:float.mul(l[1], self.k)))
+          let annots .= printf('/Dest [%d 0 R /XYZ 0 %.2f null]>>', 1 + 2 * l[0], h - l[1] * self.k)
         endif
       endfor
       call self._out(annots . ']')
@@ -1230,7 +1371,14 @@ function s:fpdf._putpages()
     call self._out('/Contents ' . (self.n + 1) . ' 0 R>>')
     call self._out('endobj')
     "Page content
-    let p = self.compress ? s:gzcompress(self.pages[n]) : self.pages[n]
+    if self.compress
+      let filter = '/Filter [/ASCIIHexDecode /FlateDecode] '
+      let p = s:bin2hex(self.pages[n])
+      let p = s:gzcompress(p)
+    else
+      let filter = ''
+      let p = self.pages[n]
+    endif
     call self._newobj()
     call self._out('<<' . filter . '/Length ' . strlen(p) . '>>')
     call self._putstream(p)
@@ -1246,7 +1394,7 @@ function s:fpdf._putpages()
   endfor
   call self._out(kids . ']')
   call self._out('/Count ' . nb)
-  call self._out(s:sprintf('/MediaBox [0 0 %.2f %.2f]', wPt, hPt))
+  call self._out(printf('/MediaBox [0 0 %.2f %.2f]', wPt, hPt))
   call self._out('>>')
   call self._out('endobj')
 endfunction
@@ -1259,8 +1407,6 @@ function s:fpdf._putfonts()
     call self._out('<</Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [' . diff . ']>>')
     call self._out('endobj')
   endfor
-  let mqr = s:get_magic_quotes_runtime()
-  call s:set_magic_quotes_runtime(0)
   for [file, info] in items(self.FontFiles)
     "Font file embedding
     call self._newobj()
@@ -1272,7 +1418,7 @@ function s:fpdf._putfonts()
       if header
         "Strip first binary header
         "let font = font[6 : ]
-        call remoev(fontdata, 0, 5)
+        call remove(fontdata, 0, 5)
       endif
       if header && str2nr(fontdata[info['length1']], 16) == 128
         "Strip second binary header
@@ -1295,7 +1441,6 @@ function s:fpdf._putfonts()
     call self._putstream(hex)
     call self._out('endobj')
   endfor
-  call s:set_magic_quotes_runtime(mqr)
   for [k, font] in items(self.fonts)
     "Font objects
     let self.fonts[k]['n'] = self.n + 1
@@ -1363,7 +1508,6 @@ function s:fpdf._putfonts()
 endfunction
 
 function s:fpdf._putimages()
-  let filter = (self.compress) ? '/Filter [/ASCIIHexDecode /FlateDecode] ' : '/Filter /ASCIIHexDecode '
   for [file, info] in items(self.images)
     call self._newobj()
     let self.images[file]['n'] = self.n
@@ -1382,9 +1526,7 @@ function s:fpdf._putimages()
     endif
     call self._out('/BitsPerComponent ' . info['bpc'])
     if has_key(info, 'f')
-      call self._out('/Filter [/ASCIIHexDecode /' . info['f'] . ']')
-    else
-      call self._out('/Filter /ASCIIHexDecode')
+      call self._out(info['f'])
     endif
     if has_key(info, 'parms')
       call self._out(info['parms'])
@@ -1402,8 +1544,14 @@ function s:fpdf._putimages()
     call self._out('endobj')
     "Palette
     if info['cs'] == 'Indexed'
+      if self.compress
+        let filter = '/Filter [/ASCIIHexDecode /FlateDecode] '
+        let pal = s:gzcompress(info['pal'])
+      else
+        let filter = '/Filter /ASCIIHexDecode '
+        let pal = info['pal']
+      endif
       call self._newobj()
-      let pal = (self.compress) ? s:gzcompress(info['pal']) : info['pal']
       call self._out('<<' . filter . '/Length ' . strlen(pal) . '>>')
       call self._putstream(pal)
       call self._out('endobj')
@@ -1442,21 +1590,21 @@ function s:fpdf._putresources()
 endfunction
 
 function s:fpdf._putinfo()
-  call self._out('/Producer ' . self._textstring(printf('fpdf-vim %s (FPDF %s)', s:FPDF_VIM_VERSION, s:FPDF_VERSION)))
+  call self._out('/Producer ' . self._textstring(printf('fpdf-vim %s (FPDF %s)', s:FPDF_VIM_VERSION, s:FPDF_VERSION), 1))
   if self.title != ''
-    call self._out('/Title ' . self._textstring(self.title))
+    call self._out('/Title ' . self._textstring(self.title, 1))
   endif
   if self.subject != ''
-    call self._out('/Subject ' . self._textstring(self.subject))
+    call self._out('/Subject ' . self._textstring(self.subject, 1))
   endif
   if self.author != ''
-    call self._out('/Author ' . self._textstring(self.author))
+    call self._out('/Author ' . self._textstring(self.author, 1))
   endif
   if self.keywords != ''
-    call self._out('/Keywords ' . self._textstring(self.keywords))
+    call self._out('/Keywords ' . self._textstring(self.keywords, 1))
   endif
   if self.creator != ''
-    call self._out('/Creator ' . self._textstring(self.creator))
+    call self._out('/Creator ' . self._textstring(self.creator, 1))
   endif
   call self._out('/CreationDate ' . self._textstring('D:' . strftime('%Y%m%d%H%M%S')))
 endfunction
@@ -1514,7 +1662,7 @@ function s:fpdf._enddoc()
   call self._out('0 ' . (self.n + 1))
   call self._out('0000000000 65535 f ')
   for i in range(1, self.n)
-    call self._out(s:sprintf('%010d 00000 n ', self.offsets[i]))
+    call self._out(printf('%010d 00000 n ', self.offsets[i]))
   endfor
   "Trailer
   call self._out('trailer')
@@ -1580,8 +1728,8 @@ function s:fpdf._dounderline(x, y, txt)
   "Underline text
   let up = self.CurrentFont['up']
   let ut = self.CurrentFont['ut']
-  let w = s:float.add(self.GetStringWidth(txt), s:float.mul(self.ws, s:substr_count(txt, ' ')))
-  return s:sprintf('%.2f %.2f %.2f %.2f re f', s:float.mul(x, self.k), s:float.mul(s:float.sub(self.h, s:float.sub(y, s:float.mul(s:float.div(up, 1000), self.FontSize))), self.k), s:float.mul(w, self.k), s:float.mul(s:float.div(s:float.sub(0, ut), 1000), self.FontSizePt))
+  let w = self.GetStringWidth(txt) + self.ws * s:substr_count(txt, ' ')
+  return printf('%.2f %.2f %.2f %.2f re f', x * self.k, (self.h - (y - up / 1000.0 * self.FontSize)) * self.k, w * self.k, -ut / 1000.0 * self.FontSizePt)
 endfunction
 
 function s:fpdf._parsejpg(file)
@@ -1590,7 +1738,7 @@ function s:fpdf._parsejpg(file)
   "Read whole file
   let data = s:readfilebin(file)
   "Extract info from a JPEG file
-  let a = self.GetImageSizeJpeg(data)
+  let a = s:GetImageSizeJpeg(data)
   if a == {}
     throw 'Missing or incorrect image file: ' . file
   endif
@@ -1605,7 +1753,8 @@ function s:fpdf._parsejpg(file)
     let colspace = 'DeviceGray'
   endif
   let bpc = get(a, 'bits', 8)
-  return {'w' : a[0], 'h' : a[1], 'cs' : colspace, 'bpc' : bpc, 'f' : 'DCTDecode', 'data' : join(data, '')}
+  let filter = '/Filter [/ASCIIHexDecode /DCTDecode]'
+  return {'w' : a[0], 'h' : a[1], 'cs' : colspace, 'bpc' : bpc, 'f' : filter, 'data' : join(data, '')}
 endfunction
 
 function s:fpdf._parsepng(file)
@@ -1615,21 +1764,21 @@ function s:fpdf._parsepng(file)
   let data = s:readfilebin(file)
   "Check signature
   "if(fread($f,8)!=chr(137).'PNG'.chr(13).chr(10).chr(26).chr(10))
-  if join(remove(data, 0, 7), '') != '89504E470D0A1A0A'
+  if s:freadhex(data, 8) !=? '89504E470D0A1A0A'
     throw 'Not a PNG file: ' . file
   endif
   "Read header chunk
-  call remove(data, 0, 3)
-  if self._freadstr(data, 4) != 'IHDR'
+  call s:freadhex(data, 4)
+  if s:fread(data, 4) !=? 'IHDR'
     throw 'Incorrect PNG file: ' . file
   endif
-  let w = self._freadint(data)
-  let h = self._freadint(data)
-  let bpc = str2nr(remove(data, 0), 16)
+  let w = s:freadint(data)
+  let h = s:freadint(data)
+  let bpc = s:freadbyte(data)
   if bpc > 8
     throw '16-bit depth not supported: ' . file
   endif
-  let ct = str2nr(remove(data, 0), 16)
+  let ct = s:freadbyte(data)
   if ct == 0
     let colspace = 'DeviceGray'
   elseif ct == 2
@@ -1639,28 +1788,29 @@ function s:fpdf._parsepng(file)
   else
     throw 'Alpha channel not supported: ' . file
   endif
-  if str2nr(remove(data, 0), 16) != 0
+  if s:freadbyte(data) != 0
     throw 'Unknown compression method: ' . file
   endif
-  if str2nr(remove(data, 0), 16) != 0
+  if s:freadbyte(data) != 0
     throw 'Unknown filter method: ' . file
   endif
-  if str2nr(remove(data, 0), 16) != 0
+  if s:freadbyte(data) != 0
     throw 'Interlacing not supported: ' . file
   endif
-  call remove(data, 0, 3)
+  call s:freadhex(data, 4)
+  let filter = '/Filter [/ASCIIHexDecode /FlateDecode]'
   let parms = '/DecodeParms [null <</Predictor 15 /Colors ' . (ct==2 ? 3 : 1) . ' /BitsPerComponent ' . bpc . ' /Columns ' .  w . '>>]'
   "Scan chunks looking for palette, transparency and image data
-  let pal = []
+  let pal = ''
   let trns = ''
-  let idata = []
+  let block = []
   while 1
-    let n = self._freadint(data)
-    let type = self._freadstr(data, 4)
+    let n = s:freadint(data)
+    let type = s:fread(data, 4)
     if type == 'PLTE'
       "Read palette
-      let pal = remove(data, 0, n - 1)
-      call remove(data, 0, 3)
+      let pal = s:freadhex(data, n)
+      call s:freadhex(data, 4)
     elseif type == 'tRNS'
       "Read transparency info
       let t = remove(data, 0, n - 1)
@@ -1677,94 +1827,36 @@ function s:fpdf._parsepng(file)
           let trns = [pos]
         endif
       endif
-      call remove(data, 0, 3)
+      call s:freadhex(data, 4)
     elseif type == 'IDAT'
       "Read image data block
-      call extend(idata, remove(data, 0, n - 1))
-      call remove(data, 0, 3)
+      call add(block, s:freadhex(data, n))
+      call s:freadhex(data, 4)
     elseif type == 'IEND'
       break
     else
-      call remove(data, 0, n + 4 - 1)
+      call s:freadhex(data, n + 4)
     endif
     if n == 0
       break
     endif
   endwhile
-  if colspace == 'Indexed' && empty(pal)
+  if colspace == 'Indexed' && pal == ''
     throw 'Missing palette in ' . file
   endif
-  return {'w' : w, 'h' : h, 'cs' : colspace, 'bpc' : bpc, 'f' : 'FlateDecode', 'parms' : parms, 'pal' : join(pal, ''), 'trns' : trns, 'data' : join(idata, '')}
+  return {'w' : w, 'h' : h, 'cs' : colspace, 'bpc' : bpc, 'f' : filter, 'parms' : parms, 'pal' : pal, 'trns' : trns, 'data' : join(block, '')}
 endfunction
 
-function s:fpdf.GetImageSizeJpeg(data)
-  " XXX: I don't know specification.
-  let data = a:data
-  let code = data[0] . data[1]
-  if code !=? 'FFD8'
-    throw 'GetImageSizeJpeg(): format error'
-  endif
-  let i = 2
-  let code = data[i] . data[i + 1]
-  while code !=? 'FFC0'
-    let i += 2
-    let size = self._freadshort(data[i : i + 1])
-    let i += size
-    let code = data[i] . data[i + 1]
-  endwhile
-  if code !=? 'FFC0'
-    throw 'GetImageSizeJpeg(): cannot get image size'
-  endif
-  let i += 2
-  let data = data[i : i + 7]
-  let lf = self._freadshort(data)
-  let p = self._freadbyte(data)
-  let y = self._freadshort(data)
-  let x = self._freadshort(data)
-  let nif = self._freadbyte(data)
-  let IMAGETYPE_JPEG = 2
-  return {
-        \ 0 : x,
-        \ 1 : y,
-        \ 2 : IMAGETYPE_JPEG,
-        \ 3 : printf('width="%d" height="%d"', x, y),
-        \ 'bits' : p,
-        \ 'channels' : nif,
-        \ 'mime' : 'image/jpeg',
-        \ }
-endfunction
-
-" XXX:
-function s:fpdf._freadint(data)
-  "Read a 4-byte integer from file
-  let n = remove(a:data, 0, 3)
-  call map(n, 'str2nr(v:val, 16)')
-  return (n[0] * 0x1000000) + (n[1] * 0x10000) + (n[2] * 0x100) + n[3]
-endfunction
-
-function s:fpdf._freadshort(data)
-  let n = remove(a:data, 0, 1)
-  call map(n, 'str2nr(v:val, 16)')
-  return (n[0] * 0x100) + n[1]
-endfunction
-
-function s:fpdf._freadbyte(data)
-  return str2nr(remove(a:data, 0), 16)
-endfunction
-
-function s:fpdf._freadstr(data, n)
-  let n = remove(a:data, 0, a:n - 1)
-  call map(n, '"\\x" . v:val')
-  return eval('"' . join(n, '') . '"')
-endfunction
-
-function s:fpdf._textstring(s)
+function s:fpdf._textstring(s, ...)
+  let bom = get(a:000, 0, 0)
   "TODO: encoding
   "Format a text string
-  if self.CurrentFont['type'] ==? 'type0'
-    return '<' . self._bin2hex(a:s) . '>'
-  else
+  if a:s =~ '^[\x00-\x7F]*$'
     return '(' . self._escape(a:s) . ')'
+  elseif self.CurrentFont['type'] == 'core'
+    return '<' . s:bin2hex_winansi(a:s) . '>'
+  else
+    return '<' . (bom ? 'FEFF' : '') . s:bin2hex_utf16(a:s) . '>'
   endif
 endfunction
 
@@ -1775,10 +1867,6 @@ function s:fpdf._escape(s)
   let s = substitute(s, '(', '\\(', 'g')
   let s = substitute(s, ')', '\\)', 'g')
   return s
-endfunction
-
-function s:fpdf._bin2hex(s)
-  return join(map(split(a:s, '\zs'), 'self.nr2utf16hex(char2nr(v:val))'), '')
 endfunction
 
 function s:fpdf._putstream(s)
@@ -1798,113 +1886,23 @@ endfunction
 
 
 
-"-----------------------------------------------------------
-" MBFPDF features
-"-----------------------------------------------------------
-
-" Encoding & CMap List (CMap information from Acrobat Reader Resource/CMap folder)
-let s:fpdf.MBCMAP = {
-      \ 'UniCNS' : {'Encoding' : 'UniCNS-UTF16-H', 'Ordering' : 'CNS1',   'Supplement' : 0},
-      \ 'UniGB'  : {'Encoding' : 'UniGB-UTF16-H',  'Ordering' : 'GB1',    'Supplement' : 2},
-      \ 'UniKS'  : {'Encoding' : 'UniKS-UTF16-H',  'Ordering' : 'Korea1', 'Supplement' : 0},
-      \ 'UniJIS' : {'Encoding' : 'UniJIS-UTF16-H', 'Ordering' : 'Japan1', 'Supplement' : 5},
-      \ }
-
-let s:fpdf.MBTTFDEF_MONO = {
-      \ 'ut' : 74,
-      \ 'up' : -66,
-      \ 'cw' : {
-      \   char2nr(' '):500  ,char2nr('!'):500  ,char2nr('"'):500  ,char2nr('#'):500  ,char2nr('$'):500  ,char2nr('%'):500  ,char2nr('&'):500  ,
-      \   char2nr("'"):500  ,char2nr('('):500  ,char2nr(')'):500  ,char2nr('*'):500  ,char2nr('+'):500  ,char2nr(','):500  ,char2nr('-'):500  ,
-      \   char2nr('.'):500  ,char2nr('/'):500  ,char2nr('0'):500  ,char2nr('1'):500  ,char2nr('2'):500  ,char2nr('3'):500  ,char2nr('4'):500  ,
-      \   char2nr('5'):500  ,char2nr('6'):500  ,char2nr('7'):500  ,char2nr('8'):500  ,char2nr('9'):500  ,char2nr(':'):500  ,char2nr(';'):500  ,
-      \   char2nr('<'):500  ,char2nr('='):500  ,char2nr('>'):500  ,char2nr('?'):500  ,char2nr('@'):500  ,char2nr('A'):500  ,char2nr('B'):500  ,
-      \   char2nr('C'):500  ,char2nr('D'):500  ,char2nr('E'):500  ,char2nr('F'):500  ,char2nr('G'):500  ,char2nr('H'):500  ,char2nr('I'):500  ,
-      \   char2nr('J'):500  ,char2nr('K'):500  ,char2nr('L'):500  ,char2nr('M'):500  ,char2nr('N'):500  ,char2nr('O'):500  ,char2nr('P'):500  ,
-      \   char2nr('Q'):500  ,char2nr('R'):500  ,char2nr('S'):500  ,char2nr('T'):500  ,char2nr('U'):500  ,char2nr('V'):500  ,char2nr('W'):500  ,
-      \   char2nr('X'):500  ,char2nr('Y'):500  ,char2nr('Z'):500  ,char2nr('['):500  ,char2nr('\'):500  ,char2nr(']'):500  ,char2nr('^'):500  ,
-      \   char2nr('_'):500  ,char2nr('`'):500  ,char2nr('a'):500  ,char2nr('b'):500  ,char2nr('c'):500  ,char2nr('d'):500  ,char2nr('e'):500  ,
-      \   char2nr('f'):500  ,char2nr('g'):500  ,char2nr('h'):500  ,char2nr('i'):500  ,char2nr('j'):500  ,char2nr('k'):500  ,char2nr('l'):500  ,
-      \   char2nr('m'):500  ,char2nr('n'):500  ,char2nr('o'):500  ,char2nr('p'):500  ,char2nr('q'):500  ,char2nr('r'):500  ,char2nr('s'):500  ,
-      \   char2nr('t'):500  ,char2nr('u'):500  ,char2nr('v'):500  ,char2nr('w'):500  ,char2nr('x'):500  ,char2nr('y'):500  ,char2nr('z'):500  ,
-      \   char2nr('{'):500  ,char2nr('|'):500  ,char2nr('}'):500  ,char2nr('~'):500,
-      \   },
-      \ }
-
-let s:fpdf.MBTTFDEF_PROPORTIONAL = {
-      \ 'ut' : 74,
-      \ 'up' : -66,
-      \ 'cw' : {
-      \   char2nr(' '):305  ,char2nr('!'):219  ,'\"':500 ,char2nr('#'):500  ,char2nr('$'):500  ,char2nr('%'):500  ,char2nr('&'):594  ,
-      \   char2nr("'"):203 ,char2nr('('):305  ,char2nr(')'):305  ,char2nr('*'):500  ,char2nr('+'):500  ,char2nr(','):203  ,char2nr('-'):500  ,
-      \   char2nr('.'):203  ,char2nr('/'):500  ,char2nr('0'):500  ,char2nr('1'):500  ,char2nr('2'):500  ,char2nr('3'):500  ,char2nr('4'):500  ,
-      \   char2nr('5'):500  ,char2nr('6'):500  ,char2nr('7'):500  ,char2nr('8'):500  ,char2nr('9'):500  ,char2nr(':'):203  ,char2nr(';'):203  ,
-      \   char2nr('<'):500  ,char2nr('='):500  ,char2nr('>'):500  ,char2nr('?'):453  ,char2nr('@'):668  ,char2nr('A'):633  ,char2nr('B'):637  ,
-      \   char2nr('C'):664  ,char2nr('D'):648  ,char2nr('E'):566  ,char2nr('F'):551  ,char2nr('G'):680  ,char2nr('H'):641  ,char2nr('I'):246  ,
-      \   char2nr('J'):543  ,char2nr('K'):598  ,char2nr('L'):539  ,char2nr('M'):742  ,char2nr('N'):641  ,char2nr('O'):707  ,char2nr('P'):617  ,
-      \   char2nr('Q'):707  ,char2nr('R'):625  ,char2nr('S'):602  ,char2nr('T'):590  ,char2nr('U'):641  ,char2nr('V'):633  ,char2nr('W'):742  ,
-      \   char2nr('X'):602  ,char2nr('Y'):590  ,char2nr('Z'):566  ,char2nr('['):336  ,'\\':504 ,char2nr(']'):336  ,char2nr('^'):414  ,
-      \   char2nr('_'):305  ,char2nr('`'):414  ,char2nr('a'):477  ,char2nr('b'):496  ,char2nr('c'):500  ,char2nr('d'):496  ,char2nr('e'):500  ,
-      \   char2nr('f'):305  ,char2nr('g'):461  ,char2nr('h'):500  ,char2nr('i'):211  ,char2nr('j'):219  ,char2nr('k'):461  ,char2nr('l'):211  ,
-      \   char2nr('m'):734  ,char2nr('n'):500  ,char2nr('o'):508  ,char2nr('p'):496  ,char2nr('q'):496  ,char2nr('r'):348  ,char2nr('s'):461  ,
-      \   char2nr('t'):352  ,char2nr('u'):500  ,char2nr('v'):477  ,char2nr('w'):648  ,char2nr('x'):461  ,char2nr('y'):477  ,char2nr('z'):457  ,
-      \   char2nr('{'):234  ,char2nr('|'):234  ,char2nr('}'):234  ,char2nr('~'):414,
-      \   },
-      \ }
-
-function s:fpdf.AddCIDFont(family, style, name, cw, Encoding, Registry, ut, up)
-  let i = len(self.fonts) + 1
-  let fontkey = tolower(a:family) . toupper(a:style)
-  let self.fonts[fontkey] = {'i' : i, 'type' : 'Type0', 'name' : a:name, 'up' : a:up, 'ut' : a:ut, 'cw' : a:cw, 'Encoding' : a:Encoding, 'Registry' : a:Registry}
-endfunction
-
-function s:fpdf.AddMBFont(...)
-  let family = get(a:000, 0)
-  let cmap = get(a:000, 1)
-  let gt = get(a:000, 2, {})
-
-  if !has_key(self.MBCMAP, cmap)
-    throw "AddMBFont: ERROR CMap " . cmap . " Undefine."
-  endif
-  if gt == {}
-    let gt = self.MBTTFDEF_MONO
-  endif
-  let gc = self.MBCMAP[cmap]
-  let ut = gt['ut']
-  let up = gt['up']
-  let cw = gt['cw']
-  let ec = gc['Encoding']
-  let od = gc['Ordering']
-  let sp = gc['Supplement']
-  let Registry = {'Ordering' : od, 'Supplement' : sp}
-  call self.AddCIDFont(family,''  , family                , cw, ec, Registry, ut, up)
-  call self.AddCIDFont(family,'B' , family . ",Bold"      , cw, ec, Registry, ut, up)
-  call self.AddCIDFont(family,'I' , family . ",Italic"    , cw, ec, Registry, ut, up)
-  call self.AddCIDFont(family,'BI', family . ",BoldItalic", cw, ec, Registry, ut, up)
-endfunction
-
-function s:fpdf.nr2utf16hex(char)
-  if a:char == 0xFFFD
-    return "FFFD" " replacement character
-  elseif a:char < 0x10000
-    return printf("%02X%02X", a:char / 0x100, a:char % 0x100)
-  else
-    let char = a:char - 0x10000
-    let w1 = 0xD800 + (char / 0x400)
-    let w2 = 0xDC00 + (char % 0x400)
-    return printf("%02X%02X%02X%02X", w1 / 0x100, w1 & 0xFF, w2 / 0x100, w2 % 0x100)
-  endif
-endfunction
-
-function s:fpdf._putType0(font)
+function s:fpdf._putcidfont0(font)
   let font = a:font
+
+  if has_key(font, 'prebuild')
+    let obj = substitute(font['prebuild'], '{\(.\{-}\)}', '\=eval(submatch(1))', 'g')
+    call self._newobj()
+    call self._out(obj)
+    call self._out('endobj')
+    return
+  endif
 
   "Type0
   call self._newobj()
   call self._out('<</Type /Font')
   call self._out('/Subtype /Type0')
-  call self._out('/BaseFont /' . font['name'] . '-' . font['Encoding'])
-  call self._out('/Encoding /' . font['Encoding'])
+  call self._out('/BaseFont /' . font['name'] . '-' . font['enc'])
+  call self._out('/Encoding /' . font['enc'])
   call self._out('/DescendantFonts [' . (self.n + 1) . ' 0 R]')
   call self._out('>>')
   call self._out('endobj')
@@ -1912,106 +1910,97 @@ function s:fpdf._putType0(font)
   call self._newobj()
   call self._out('<</Type /Font')
   call self._out('/Subtype /CIDFontType0')
-  call self._out('/BaseFont /' . font['name'] . '-' . font['Encoding'])
+  call self._out('/BaseFont /' . font['name'])
   call self._out('/CIDSystemInfo ' . (self.n + 1) . ' 0 R')
   call self._out('/FontDescriptor ' . (self.n + 2) . ' 0 R')
-  call self._out('/W [1 [ ' . join(values(font['cw']), ' ') . ' ]')
-  if font['Registry']['Ordering'] == 'Japan1'
-    call self._out(' 231 325 500 631 [500] 326 389 500')
-  endif
-  call self._out(']')
+  call self._out('/DW ' . font['dw'])
+  call self._outfontwidths(font)
   call self._out('>>')
   call self._out('endobj')
   "CIDSystemInfo
   call self._newobj()
-  call self._out('<</Registry (Adobe)')
-  call self._out('/Ordering (' . font['Registry']['Ordering'] . ')')
-  call self._out('/Supplement ' . font['Registry']['Supplement'])
+  call self._out('<</Registry (' . font['cidinfo']['Registry'] . ')')
+  call self._out('/Ordering (' . font['cidinfo']['Ordering'] . ')')
+  call self._out('/Supplement ' . font['cidinfo']['Supplement'])
   call self._out('>>')
   call self._out('endobj')
   "Font descriptor
   call self._newobj()
   call self._out('<</Type /FontDescriptor')
-  call self._out('/FontName /' . font['name'])
-  call self._out('/Flags 6')
-  call self._out('/FontBBox [0 0 1000 1000]')
-  call self._out('/ItalicAngle 0')
-  call self._out('/Ascent 1000')
-  call self._out('/Descent 0')
-  call self._out('/CapHeight 1000')
-  call self._out('/StemV 10')
+  call self._out(' /FontName /' . font['name'])
+  for [k,v] in items(font['desc'])
+    call self._out(' /' . k . ' ' . v)
+  endfor
   call self._out('>>')
   call self._out('endobj')
 endfunction
 
-function s:fpdf._putType0_test(font)
+function s:fpdf._outfontwidths(font)
   let font = a:font
+  " convert unicode to cid
+  let uni2cid = get(font['cidinfo'], 'uni2cid', {})
+  let cw = {}
+  for uni in keys(font['cw'])
+    if has_key(uni2cid, uni)
+      let cid = uni2cid[uni]
+      let cw[cid] = font['cw'][uni]
+    elseif uni <= 255
+      let cid = uni - 31
+      let cw[cid] = font['cw'][uni]
+    else
+      " unknown character
+    endif
+  endfor
+  " /W [
+  "   <start> <end> <width> ...
+  "   <start> [ <width of start> <width of start+2> ... ]
+  " ]
+  let cids = sort(keys(cw), 's:cmpnum')
+  let ranges = [[cids[0], cids[0], cw[cids[0]]]] " [[start, end, width], ...]
+  for cid in cids
+    if cw[cid] != ranges[-1][2]
+      call add(ranges, [cid, cid, cw[cid]])
+    else
+      let ranges[-1][1] = cid
+    endif
+  endfor
+  " optimize
+  let threshold = 4
+  let i = 0
+  while i + 1 < len(ranges)
+    let j = i
+    let [start1,end1,width1] = ranges[j]
+    let [start2,end2,width2] = ranges[j + 1]
+    while end1 - start1 <= threshold && end2 - start2 <= threshold && start2 - end1 <= threshold
+      let j += 1
+      if j + 1 >= len(ranges)
+        break
+      endif
+      let [start1, end1, width1] = ranges[j]
+      let [start2, end2, width2] = ranges[j + 1]
+    endwhile
+    if i != j
+      let [start1, end1, width1] = ranges[i]
+      let [start2, end2, width2] = ranges[j]
+      call remove(ranges, i + 1, j)
+      let widths = map(range(start1, end2), 'get(cw, v:val, 0)')
+      let ranges[i] = [start1, start1, join(widths)]
+    endif
+    let i += 1
+  endwhile
+  call self._out('/W [')
+  for [start,end,width] in ranges
+    if start == end
+      call self._out(printf(" %s [%s] ", start, width))
+    else
+      call self._out(printf(" %s %s %s ", start, end, width))
+    endif
+  endfor
+  cal self._out(']')
+endfunction
 
-  "Type0
-  call self._newobj()
-  call self._out('<</Type /Font')
-  call self._out('/Subtype /Type0')
-  call self._out('/BaseFont /' . font['name'])
-  call self._out('/Encoding /Identity-H')
-  call self._out('/DescendantFonts [' . (self.n + 1) . ' 0 R]')
-  call self._out('/ToUnicode ' . (self.n + 2) . ' 0 R')
-  call self._out('>>')
-  call self._out('endobj')
-  "CIDFont
-  call self._newobj()
-  call self._out('<</Type /Font')
-  call self._out('/Subtype /CIDFontType2')
-  call self._out('/BaseFont /' . font['name'])
-  call self._out('/CIDSystemInfo ' . (self.n + 2) . ' 0 R')
-  call self._out('/FontDescriptor ' . (self.n + 3) . ' 0 R')
-  call self._out('/CIDToGIDMap /Identity')
-  call self._out('>>')
-  call self._out('endobj')
-  "ToUnicode
-  call self._newobj()
-  let s = ""
-        \ . "/CIDInit /ProcSet findresource begin \n"
-        \ . "/12 dict begin \n"
-        \ . "/begincmap \n"
-        \ . "/CIDSystemInfoc \n"
-        \ . "<</Registry (Adobe) \n"
-        \ . "/Ordering (UCS) \n"
-        \ . "/Supplement 0 \n"
-        \ . ">> def \n"
-        \ . "/CMapName /Adobe-Identity-UCS def \n"
-        \ . "/CMapType 2 def \n"
-        \ . "1 begincodespacerange \n"
-        \ . "<0000> <FFFF> \n"
-        \ . "endcodespacerange \n"
-        \ . "1 beginbfrange \n"
-        \ . "<0000> <FFFF> <0000> \n"
-        \ . "endbfrange \n"
-        \ . "endcmap \n"
-        \ . "CMapName currentdict /CMap defineresource pop \n"
-        \ . "end \n"
-        \ . "end"
-  call self._out('<</Length ' . strlen(s) . '>>')
-  call self._putstream(s)
-  call self._out('endobj')
-  "CIDSystemInfo
-  call self._newobj()
-  call self._out('<</Registry (Adobe)')
-  call self._out('/Ordering (UCS)')
-  call self._out('/Supplement 0')
-  call self._out('>>')
-  call self._out('endobj')
-  "Font descriptor
-  call self._newobj()
-  call self._out('<</Type /FontDescriptor')
-  call self._out('/FontName /' . font['name'])
-  call self._out('/Flags 96')
-  call self._out('/FontBBox [0 0 1000 1000]')
-  call self._out('/ItalicAngle 0')
-  call self._out('/Ascent 1000')
-  call self._out('/Descent 0')
-  call self._out('/CapHeight 1000')
-  call self._out('/StemV 10')
-  call self._out('>>')
-  call self._out('endobj')
+function! s:cmpnum(a, b)
+  let d = a:a - a:b
+  return d == 0 ? 0 : d > 0 ? 1 : -1
 endfunction
 

@@ -1,6 +1,5 @@
 
 let FPDF = fpdf#import()
-let s:float = float#import()
 
 function s:array_sum(arr)
   return eval(join(a:arr, '+'))

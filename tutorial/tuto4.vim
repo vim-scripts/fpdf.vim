@@ -1,6 +1,5 @@
 
 let FPDF = fpdf#import()
-let s:float = float#import()
 
 "class PDF extends FPDF
 let PDF = deepcopy(FPDF)
@@ -8,13 +7,13 @@ let PDF = deepcopy(FPDF)
 "Current column
 let PDF.col = 0
 "Ordinate of column start
-let PDF.y0 = s:float.new(0)
+let PDF.y0 = 0.0
 
 function! PDF.Header()
   "Page header
   call self.SetFont('Arial','B',15)
-  let w = s:float.add(self.GetStringWidth(g:title), 6)
-  call self.SetX(s:float.div(s:float.sub(210, w), 2))
+  let w = self.GetStringWidth(g:title) + 6
+  call self.SetX((210.0 - w) / 2.0)
   call self.SetDrawColor(0,80,180)
   call self.SetFillColor(230,230,0)
   call self.SetTextColor(220,50,50)

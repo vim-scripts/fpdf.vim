@@ -1,10 +1,10 @@
-let s:font = {}
-let s:font['type'] = 'TrueType'
-let s:font['name'] = 'Calligrapher-Regular'
-let s:font['desc'] = {'Ascent' : 899, 'Descent' : -234, 'CapHeight' : 731, 'Flags' : 32, 'FontBBox' : '[-50 -234 1328 899]', 'ItalicAngle' : 0, 'StemV' : 70, 'MissingWidth' : 800}
-let s:font['up'] = -200
-let s:font['ut'] = 20
-let s:font['cw'] = {
+let g:fpdf#font = {}
+let g:fpdf#font['type'] = 'TrueType'
+let g:fpdf#font['name'] = 'Calligrapher-Regular'
+let g:fpdf#font['desc'] = {'Ascent' : 899, 'Descent' : -234, 'CapHeight' : 731, 'Flags' : 32, 'FontBBox' : '[-50 -234 1328 899]', 'ItalicAngle' : 0, 'StemV' : 70, 'MissingWidth' : 800}
+let g:fpdf#font['up'] = -200
+let g:fpdf#font['ut'] = 20
+let g:fpdf#font['cw'] = {
       \ 0:800,1:800,2:800,3:800,4:800,5:800,6:800,7:800,8:800,9:800,10:800,11:800,12:800,13:800,14:800,15:800,16:800,17:800,18:800,19:800,20:800,21:800,
       \ 22:800,23:800,24:800,25:800,26:800,27:800,28:800,29:800,30:800,31:800,char2nr(' '):282,char2nr('!'):324,char2nr('"'):405,char2nr('#'):584,char2nr('$'):632,char2nr('%'):980,char2nr('&'):776,char2nr("'"):259,char2nr('('):299,char2nr(')'):299,char2nr('*'):377,char2nr('+'):600,
       \ char2nr(','):259,char2nr('-'):432,char2nr('.'):254,char2nr('/'):597,char2nr('0'):529,char2nr('1'):298,char2nr('2'):451,char2nr('3'):359,char2nr('4'):525,char2nr('5'):423,char2nr('6'):464,char2nr('7'):417,char2nr('8'):457,char2nr('9'):479,char2nr(':'):275,char2nr(';'):282,char2nr('<'):600,char2nr('='):600,char2nr('>'):600,char2nr('?'):501,char2nr('@'):800,char2nr('A'):743,
@@ -18,11 +18,7 @@ let s:font['cw'] = {
       \ 220:805,221:0,222:0,223:688,224:581,225:581,226:581,227:581,228:581,229:581,230:792,231:440,232:450,233:450,234:450,235:450,236:283,237:283,238:283,239:283,240:800,241:595,
       \ 242:508,243:508,244:508,245:508,246:508,247:0,248:508,249:614,250:614,251:614,252:614,253:0,254:0,255:597
       \ }
-let s:font['enc'] = 'cp1252'
-let s:font['diff'] = ''
-let s:font['file'] = 'calligra.z'
-let s:font['originalsize'] = 40120
-
-let s:fpdf = fpdf#import()
-let s:fpdf['_font'] = s:font
-unlet s:font s:fpdf
+let g:fpdf#font['enc'] = 'cp1252'
+let g:fpdf#font['diff'] = ''
+let g:fpdf#font['file'] = 'calligra.z'
+let g:fpdf#font['originalsize'] = 40120

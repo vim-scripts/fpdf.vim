@@ -1,6 +1,5 @@
 
 let FPDF = fpdf#import()
-let s:float = float#import()
 
 "class PDF extends FPDF
 let PDF = deepcopy(FPDF)
@@ -9,8 +8,8 @@ function! PDF.Header()
   "Arial bold 15
   call self.SetFont('Arial','B',15)
   "Calculate width of title and position
-  let w = s:float.add(self.GetStringWidth(g:title), 6)
-  call self.SetX(s:float.div(s:float.sub(210, w), 2))
+  let w = self.GetStringWidth(g:title) + 6
+  call self.SetX((210.0 - w) / 2.0)
   "Colors of frame, background and text
   call self.SetDrawColor(0,80,180)
   call self.SetFillColor(230,230,0)

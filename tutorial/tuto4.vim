@@ -69,7 +69,7 @@ endfunction
 
 function PDF.ChapterBody(file)
   "Read text file
-  let txt = join(readfile(a:file), '')
+  let txt = iconv(join(readfile(a:file), "\n"), 'latin1', &enc)
   "Font
   call self.SetFont('Times','',12)
   "Output text in a 6 cm width column

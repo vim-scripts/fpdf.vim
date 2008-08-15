@@ -6,6 +6,11 @@ About FPDF:
   See http://www.fpdf.org/
 
 
+Requirement:
+  :set encoding=utf-8 and iconv() feature for non-ascii text.
+  xxd for image/font embedding.
+
+
 Usage:
   :set runtimepath+=/path/to/fpdf-vim
   :so tutorial/tuto1.vim

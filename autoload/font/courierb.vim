@@ -1,6 +1,6 @@
 let g:fpdf#font = {}
 let g:fpdf#font['type'] = 'core'
-let g:fpdf#font['name'] = 'Courier'
+let g:fpdf#font['name'] = 'Courier-Bold'
 let g:fpdf#font['up'] = -100
 let g:fpdf#font['ut'] = 50
 let g:fpdf#font['cw'] = {}

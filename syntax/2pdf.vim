@@ -12,7 +12,7 @@
 "     {nb}    Number of pages
 
 let s:fpdf = fpdf#import()
-let s:topdf = copy(s:fpdf)
+let s:topdf = deepcopy(s:fpdf)
 
 let s:topdf.config = {}
 let s:topdf.config['font'] = get(g:, 'topdf_font', 'Courier')
@@ -70,11 +70,17 @@ function! s:topdf.setstyle(name)
   if !has_key(s, 'background-color')
     let s['background-color'] = get(self.style['body'], 'background-color', '#FFFFFF')
   endif
-  if get(s, 'font-weight') == 'bold'
-    call self.SetFont(self.config['font'], 'B', self.config['font_size'])
-  else
-    call self.SetFont(self.config['font'], '', self.config['font_size'])
+  let style = ''
+  if get(s, 'font-weight', '') =~ 'bold'
+    let style .= 'B'
   endif
+  if get(s, 'font-style', '') =~ 'italic'
+    let style .= 'I'
+  endif
+  if get(s, 'text-decoration', '') =~ 'underline'
+    let style .= 'U'
+  endif
+  call self.SetFont(self.config['font'], style, self.config['font_size'])
   let [r, g, b] = self.hex2rgb(s['color'])
   call self.SetTextColor(r, g, b)
   let [r, g, b] = self.hex2rgb(s['background-color'])
@@ -95,10 +101,7 @@ function! s:topdf() abort
     if !empty(_)
       let name = _[1]
       let style[name] = {}
-      let m = s:lib.Matcher.new(_[2], '\([A-Za-z-]\+\):\s*\([0-9A-Za-z#]\+\);')
-      while m.find()
-        let style[name][m[1]] = m[2]
-      endwhile
+      call substitute(_[2], '\([A-Za-z-]\+\):\s*\([0-9A-Za-z#]\+\);', '\=empty(extend(style[name],{submatch(1):submatch(2)}))', 'g')
     endif
     let lnum += 1
   endwhile
@@ -137,6 +140,7 @@ function! s:topdf() abort
   bwipeout!
   new
   put =topdf.Output()
+  1delete _
 endfunction
 
 function! s:tohtml()
@@ -157,6 +161,8 @@ function! s:tohtml()
 
   runtime syntax/2html.vim
 
+  unlet g:html_use_css
+  unlet g:html_no_pre
   for [k,v] in items(save)
     let {k} = v
   endfor

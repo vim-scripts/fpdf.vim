@@ -13,3 +13,5 @@ new
 put =pdfout
 1delete _
 set ft=pdf
+
+unlet g:FPDF_FONTPATH
